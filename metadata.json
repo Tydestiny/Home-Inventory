@@ -1,0 +1,7 @@
+{
+  "name": "Home Inventory & Restock Manager",
+  "description": "A smart home inventory tracker with expiration tracking, restock reminders, and receipt OCR.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
