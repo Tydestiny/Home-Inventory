@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { X, ExternalLink, DollarSign, Search, Link } from 'lucide-react';
+import { X, ExternalLink, Search, Link, Copy, Maximize2 } from 'lucide-react';
 import { Item, Category, Location, LifecycleType } from '../types';
 import { Language, Currency } from '../i18n';
 import { useTranslation } from 'react-i18next';
+import { SmartNumberInputWithSpinners, SmartNotesInput } from './FormControls';
 
 interface EditItemModalProps {
   item: Item;
@@ -23,14 +24,30 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
     category_id: item.category_id,
     location_id: item.location_id,
     quantity: item.quantity,
+    alert_threshold: item.alert_threshold || (item.lifecycle_type === 'consumable' ? 2 : 5),
     lifecycle_type: item.lifecycle_type as LifecycleType,
     lifecycle_interval_days: item.lifecycle_interval_days || 0,
     last_action_date: item.last_action_date || '',
     expiration_date: item.expiration_date || '',
-    store_link: item.store_link || '',
-    current_price: item.current_price || ''
+    notes: item.notes || '',
+    is_permanent: item.lifecycle_interval_days === 0
   });
   const [saving, setSaving] = useState(false);
+  const [cachedInterval, setCachedInterval] = useState(item.lifecycle_interval_days || 0);
+
+  // Update formData when permanent toggle changes
+  React.useEffect(() => {
+    if (formData.is_permanent) {
+      if (formData.lifecycle_interval_days > 0) {
+        setCachedInterval(formData.lifecycle_interval_days);
+      }
+      setFormData(prev => ({ ...prev, lifecycle_interval_days: 0 }));
+    } else {
+      if (formData.lifecycle_interval_days === 0 && cachedInterval > 0) {
+        setFormData(prev => ({ ...prev, lifecycle_interval_days: cachedInterval }));
+      }
+    }
+  }, [formData.is_permanent]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,12 +155,9 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-zinc-700 mb-1">{t('quantity')}</label>
-              <input 
-                type="number" 
-                min="0"
+              <SmartNumberInputWithSpinners
                 value={formData.quantity}
-                onChange={e => setFormData({...formData, quantity: parseInt(e.target.value) || 0})}
-                className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                onChange={val => setFormData({...formData, quantity: val})}
               />
             </div>
             <div>
@@ -157,75 +171,65 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">{t('intervalDays')}</label>
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
               <input 
-                type="number" 
-                min="1"
-                required
-                value={formData.lifecycle_interval_days}
-                onChange={e => setFormData({...formData, lifecycle_interval_days: parseInt(e.target.value) || 0})}
-                className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                type="checkbox"
+                id="permanentUseEdit"
+                checked={formData.is_permanent}
+                onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
+                className="w-4 h-4 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
               />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">
-                {formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
+              <label htmlFor="permanentUseEdit" className="text-sm font-medium text-zinc-700 select-none">
+                {t('permanentUse')}
               </label>
-              <input 
-                type="date" 
-                required
-                value={formData.last_action_date}
-                onChange={e => setFormData({...formData, last_action_date: e.target.value})}
-                className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1">{t('intervalDays')}</label>
+                <SmartNumberInputWithSpinners
+                  min={0}
+                  disabled={formData.is_permanent}
+                  value={formData.lifecycle_interval_days}
+                  onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
+                  className="disabled:bg-zinc-100 disabled:text-zinc-400"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1">
+                  {formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
+                </label>
+                <input 
+                  type="date" 
+                  required
+                  value={formData.last_action_date}
+                  onChange={e => setFormData({...formData, last_action_date: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                />
+              </div>
             </div>
           </div>
         )}
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1">{t('currentPrice')}</label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-sm">
-                {currency === 'CNY' ? '¥' : '$'}
-              </span>
-              <input 
-                type="number" 
-                step="0.01"
-                min="0"
-                value={formData.current_price}
-                onChange={e => setFormData({...formData, current_price: e.target.value})}
-                className="w-full pl-7 pr-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                placeholder="0.00"
-              />
-            </div>
+            <label className="block text-sm font-medium text-zinc-700 mb-1">
+              {formData.lifecycle_type === 'perishable' ? t('alertWhenDaysLess') : t('alertWhenBelow')}
+            </label>
+            <SmartNumberInputWithSpinners
+              value={formData.alert_threshold}
+              onChange={val => setFormData({...formData, alert_threshold: val})}
+              unitLabel={formData.lifecycle_type === 'perishable' ? t('thresholdDays') : t('thresholdItems')}
+            />
           </div>
           <div>
-            <label className="block text-sm font-medium text-zinc-700 mb-1">{t('storeLink')}</label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <input 
-                  type="url" 
-                  value={formData.store_link}
-                  onChange={e => setFormData({...formData, store_link: e.target.value})}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  placeholder="https://..."
-                />
-              </div>
-              {formData.store_link && (
-                <a 
-                  href={formData.store_link}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-center px-3 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-zinc-200 transition-colors shrink-0"
-                  title={t('restock')}
-                >
-                  <ExternalLink className="w-4 h-4" />
-                </a>
-              )}
-            </div>
+            <label className="block text-sm font-medium text-zinc-700 mb-1">{t('notes')}</label>
+            <SmartNotesInput
+              value={formData.notes}
+              onChange={val => setFormData({...formData, notes: val})}
+              placeholder={t('notesPlaceholder')}
+            />
           </div>
         </div>
       </form>

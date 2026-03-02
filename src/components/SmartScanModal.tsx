@@ -88,6 +88,7 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
               - name: A clean, concise product name in ${lang === 'zh' ? 'Chinese' : 'English'}.
               - category_id: Best matching category ID from this list: ${categories.map(c => `${c.id} (${c.name})`).join(', ')}. If unsure, pick the closest one.
               - quantity: Estimated quantity (default 1).
+              - alert_threshold: Sensible default alert threshold (e.g., 2 for quantity, 5 for days).
               - lifecycle_type: 'perishable' (food/medicine), 'consumable' (sponges, batteries), or 'maintenance' (tasks).
               - lifecycle_interval_days: If consumable/maintenance, estimate the replacement/maintenance interval in days (e.g., 14 for sponge, 90 for toothbrush). 0 if perishable.
               `
@@ -104,10 +105,11 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
                 name: { type: Type.STRING },
                 category_id: { type: Type.STRING },
                 quantity: { type: Type.INTEGER },
+                alert_threshold: { type: Type.INTEGER },
                 lifecycle_type: { type: Type.STRING },
                 lifecycle_interval_days: { type: Type.INTEGER }
               },
-              required: ['name', 'category_id', 'quantity', 'lifecycle_type', 'lifecycle_interval_days']
+              required: ['name', 'category_id', 'quantity', 'alert_threshold', 'lifecycle_type', 'lifecycle_interval_days']
             }
           }
         }
@@ -286,7 +288,7 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
                           </div>
                         </div>
                         
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                           <div>
                             <label className="block text-xs font-medium text-zinc-500 mb-1">{t('type')}</label>
                             <select 
@@ -298,6 +300,16 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
                               <option value="consumable">{t('consumable')}</option>
                               <option value="maintenance">{t('maintenance')}</option>
                             </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-zinc-500 mb-1">{t('alertThreshold')}</label>
+                            <input 
+                              type="number" 
+                              min="0"
+                              value={item.alert_threshold} 
+                              onChange={(e) => updateExtractedItem(idx, 'alert_threshold', parseInt(e.target.value) || 0)}
+                              className="w-full px-3 py-1.5 text-sm border border-zinc-200 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                            />
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-zinc-500 mb-1">{t('location')}</label>

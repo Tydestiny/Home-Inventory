@@ -4,13 +4,13 @@ import {
   Package, AlertTriangle, CheckCircle, Clock, 
   Plus, Search, Filter, MoreVertical, ShoppingCart,
   Camera, Trash2, Bell, RefreshCw, Download, Settings,
-  ExternalLink
+  ExternalLink, Copy, Maximize2
 } from 'lucide-react';
-import { Item, Category, Location, SmartPreset, LifecycleType, Notification as AppNotification, PriceHistory } from './types';
+import { Item, Category, Location, SmartPreset, LifecycleType, Notification as AppNotification } from './types';
 import { SmartScanModal } from './components/SmartScanModal';
 import { EditItemModal } from './components/EditItemModal';
 import { SettingsModal } from './components/SettingsModal';
-import PriceTrendChart from './components/PriceTrendChart';
+import { SmartNumberInputWithSpinners, SmartNotesInput } from './components/FormControls';
 import { Language, Currency, formatCurrency } from './i18n';
 import { useTranslation } from 'react-i18next';
 
@@ -24,7 +24,6 @@ function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
-  const [priceHistory, setPriceHistory] = useState<PriceHistory[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<LifecycleType | 'all'>('all');
   const [showFilterMenu, setShowFilterMenu] = useState(false);
@@ -35,6 +34,9 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [lang, setLang] = useState<Language>('en');
   const [currency, setCurrency] = useState<Currency>('USD');
+  const [confirmActionItem, setConfirmActionItem] = useState<Item | null>(null);
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
 
   const { t, i18n } = useTranslation();
 
@@ -48,14 +50,6 @@ function App() {
     fetchNotifications();
   }, []);
 
-  useEffect(() => {
-    if (selectedItem) {
-      fetchPriceHistory(selectedItem.id);
-    } else {
-      setPriceHistory([]);
-    }
-  }, [selectedItem]);
-
   const fetchNotifications = async () => {
     try {
       const res = await fetch('/api/notifications');
@@ -64,17 +58,6 @@ function App() {
       }
     } catch (error) {
       console.error('Error fetching notifications:', error);
-    }
-  };
-
-  const fetchPriceHistory = async (itemId: string) => {
-    try {
-      const res = await fetch(`/api/items/${itemId}/price-history`);
-      if (res.ok) {
-        setPriceHistory(await res.json());
-      }
-    } catch (error) {
-      console.error('Error fetching price history:', error);
     }
   };
 
@@ -158,10 +141,19 @@ function App() {
       if (res.ok) {
         const updatedItem = await res.json();
         setItems(items.map(item => item.id === id ? updatedItem : item));
+        setToastMessage(t('actionSuccess'));
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 3000);
       }
     } catch (error) {
       console.error('Error performing action:', error);
+    } finally {
+      setConfirmActionItem(null);
     }
+  };
+
+  const requestAction = (item: Item) => {
+    setConfirmActionItem(item);
   };
 
   const addMultipleItems = async (itemsToAdd: any[]) => {
@@ -214,37 +206,110 @@ function App() {
   // Analytics logic
   const getItemStatus = (item: Item) => {
     const now = new Date();
-    const actionDate = item.next_action_date ? new Date(item.next_action_date) : null;
-    const daysUntilAction = actionDate ? Math.ceil((actionDate.getTime() - now.getTime()) / (1000 * 3600 * 24)) : null;
+    
+    // 1. Maintenance Logic
+    if (item.lifecycle_type === 'maintenance') {
+      if (!item.lifecycle_interval_days || item.lifecycle_interval_days === 0) {
+        return {
+          label: t('permanent'),
+          color: 'bg-zinc-100 text-zinc-600 border-zinc-200',
+          actionType: 'none',
+          isButton: false,
+          statusKey: 'permanent'
+        };
+      }
 
-    const isLowStock = item.quantity <= 1;
+      const lastMaintenance = item.last_action_date ? new Date(item.last_action_date) : null;
+      if (!lastMaintenance) {
+         return {
+          label: t('overdue'),
+          color: 'bg-red-100 text-red-700 border-red-200',
+          actionType: 'maintenance',
+          isButton: true,
+          statusKey: 'action-overdue'
+        };
+      }
+
+      const nextMaintenance = new Date(lastMaintenance);
+      nextMaintenance.setDate(nextMaintenance.getDate() + item.lifecycle_interval_days);
+      
+      const daysUntilAction = Math.ceil((nextMaintenance.getTime() - now.getTime()) / (1000 * 3600 * 24));
+      const warningThreshold = Math.max(7, Math.floor(item.lifecycle_interval_days * 0.1));
+
+      if (daysUntilAction < 0) {
+        return {
+          label: t('overdue'),
+          color: 'bg-red-100 text-red-700 border-red-200',
+          actionType: 'maintenance',
+          isButton: true,
+          statusKey: 'action-overdue'
+        };
+      } else if (daysUntilAction <= warningThreshold) {
+        return {
+          label: t('dueSoon'),
+          color: 'bg-orange-100 text-orange-700 border-orange-200',
+          actionType: 'maintenance',
+          isButton: true,
+          statusKey: 'action-soon'
+        };
+      } else {
+        return {
+          label: t('healthy'),
+          color: 'bg-blue-100 text-blue-700 border-blue-200',
+          actionType: 'none',
+          isButton: false,
+          statusKey: 'good'
+        };
+      }
+    }
+
+    // 2. Perishable Logic
+    if (item.lifecycle_type === 'perishable') {
+      const expirationDate = item.expiration_date ? new Date(item.expiration_date) : null;
+      if (!expirationDate) {
+        return {
+          label: t('fresh'),
+          color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+          actionType: 'none',
+          isButton: false,
+          statusKey: 'good'
+        };
+      }
+      const daysUntilExp = Math.ceil((expirationDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
+      const threshold = item.alert_threshold ?? 5;
+
+      if (daysUntilExp < 0) {
+        return {
+          label: t('expired'),
+          color: 'bg-red-100 text-red-700 border-red-200',
+          actionType: 'replace',
+          isButton: true,
+          statusKey: 'action-overdue'
+        };
+      } else if (daysUntilExp <= threshold) {
+        return {
+          label: t('expiringSoon'),
+          color: 'bg-amber-100 text-amber-700 border-amber-200',
+          actionType: 'replace',
+          isButton: true,
+          statusKey: 'action-soon'
+        };
+      } else {
+        return {
+          label: t('fresh'),
+          color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+          actionType: 'none',
+          isButton: false,
+          statusKey: 'good'
+        };
+      }
+    }
+
+    // 3. Consumable Logic
     const isOutOfStock = item.quantity === 0;
-    const isOverdue = daysUntilAction !== null && daysUntilAction < 0;
-    const isSoon = daysUntilAction !== null && daysUntilAction <= 7;
+    const threshold = item.alert_threshold ?? 2;
+    const isLowStock = item.quantity <= threshold;
 
-    // Priority 1: Overdue / Expired (Usage Trigger)
-    if (isOverdue) {
-      return {
-        label: item.lifecycle_type === 'maintenance' ? t('maintenanceOverdue') : item.lifecycle_type === 'consumable' ? t('timeToReplace') : t('expired'),
-        color: 'bg-red-100 text-red-700 border-red-200',
-        actionType: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'replace',
-        isButton: false,
-        statusKey: 'action-overdue'
-      };
-    }
-
-    // Priority 2: Critical Restock (Price Intelligence + Low Stock)
-    if (isLowStock && item.is_all_time_low) {
-      return {
-        label: t('restockNow'),
-        color: 'bg-red-600 text-white border-red-700 animate-pulse',
-        actionType: 'restock',
-        isButton: true,
-        statusKey: 'critical-restock'
-      };
-    }
-
-    // Priority 3: Out of Stock
     if (isOutOfStock) {
       return {
         label: t('outOfStock'),
@@ -254,31 +319,17 @@ function App() {
         statusKey: 'empty'
       };
     }
-
-    // Priority 4: Usage Trigger Soon
-    if (isSoon) {
-      return {
-        label: item.lifecycle_type === 'maintenance' ? t('maintainSoon') : item.lifecycle_type === 'consumable' ? t('replaceSoon') : t('expiringSoon'),
-        color: 'bg-amber-100 text-amber-700 border-amber-200',
-        actionType: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'replace',
-        isButton: false,
-        statusKey: 'action-soon'
-      };
-    }
-
-    // Priority 5: Low Stock
     if (isLowStock) {
       return {
-        label: t('restockSoon'),
+        label: t('lowStock'),
         color: 'bg-amber-100 text-amber-700 border-amber-200',
         actionType: 'restock',
         isButton: true,
         statusKey: 'low'
       };
     }
-
     return {
-      label: t('healthy'),
+      label: t('inStock'),
       color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
       actionType: 'none',
       isButton: false,
@@ -370,15 +421,6 @@ function App() {
               )}
             </div>
             
-            <button 
-              onClick={simulatePrices}
-              disabled={simulatingPrices}
-              className="p-2 text-zinc-500 hover:text-emerald-600 transition-colors rounded-full hover:bg-emerald-50 disabled:opacity-50"
-              title={t('simulatePrices')}
-            >
-              <RefreshCw className={`w-5 h-5 ${simulatingPrices ? 'animate-spin' : ''}`} />
-            </button>
-
             <button 
               onClick={() => setShowScanModal(true)}
               className="p-2 text-zinc-500 hover:text-emerald-600 transition-colors rounded-full hover:bg-emerald-50"
@@ -519,14 +561,14 @@ function App() {
           ) : (
             <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-sm">
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
+                <table className="w-full text-left text-sm table-fixed">
                   <thead className="bg-zinc-50 border-b border-zinc-200 text-zinc-500">
                     <tr>
-                      <th className="px-6 py-3 font-medium">{t('name')}</th>
-                      <th className="px-6 py-3 font-medium">{t('location')}</th>
-                      <th className="px-6 py-3 font-medium">{t('status')}</th>
-                      <th className="px-6 py-3 font-medium text-right">{t('action')}</th>
-                      <th className="px-6 py-3 font-medium"></th>
+                      <th className="px-6 py-3 font-medium w-3/12">{t('name')}</th>
+                      <th className="px-6 py-3 font-medium w-2/12">{t('location')}</th>
+                      <th className="px-6 py-3 font-medium w-2/12">{t('status')}</th>
+                      <th className="px-6 py-3 font-medium w-3/12 text-center">{t('quantityControl')}</th>
+                      <th className="px-6 py-3 font-medium w-2/12 text-right">{t('action')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-100">
@@ -540,76 +582,52 @@ function App() {
                           className="hover:bg-zinc-50/50 transition-colors group cursor-pointer"
                           onClick={() => setSelectedItem(item)}
                         >
-                          <td className="px-6 py-4 align-middle">
-                            <div className="font-medium text-zinc-900">{item.name}</div>
-                            <div className="text-zinc-500 text-xs mt-0.5 capitalize">
+                          <td className="px-6 py-4 align-middle truncate">
+                            <div className="font-medium text-zinc-900 truncate" title={item.name}>{item.name}</div>
+                            <div className="text-zinc-500 text-xs mt-0.5 capitalize truncate">
                               {t(item.lifecycle_type as any)} • {t(item.category_name as any)}
-                              {item.current_price && ` • ${formatCurrency(item.current_price, currency)}`}
                             </div>
                           </td>
-                          <td className="px-6 py-4 text-zinc-600 align-middle">
+                          <td className="px-6 py-4 text-zinc-600 align-middle truncate">
                             {t(item.location_name as any)}
                           </td>
                           <td className="px-6 py-4 align-middle">
-                            <StatusBadge statusInfo={statusInfo} item={item} lang={lang} />
+                            <StatusBadge statusInfo={statusInfo} item={item} lang={lang} onAction={requestAction} />
                           </td>
                           <td className="px-6 py-4 align-middle" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center justify-end gap-6">
+                            <div className="flex items-center justify-center gap-3">
                               {/* Quantity Controls */}
-                              {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') && (
-                                <div className="flex items-center gap-3">
-                                  <button 
-                                    onClick={() => updateQuantity(item.id, Math.max(0, item.quantity - 1))}
-                                    className="w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors border border-zinc-200"
-                                  >-</button>
-                                  <span className="font-mono w-4 text-center font-medium">{item.quantity}</span>
-                                  <button 
-                                    onClick={() => updateQuantity(item.id, item.quantity + 1)}
-                                    className="w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors border border-zinc-200"
-                                  >+</button>
-                                </div>
+                              {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') ? (
+                                <SmartNumberInputWithSpinners
+                                  value={item.quantity}
+                                  onChange={(val) => updateQuantity(item.id, val)}
+                                  className="font-mono w-16 font-medium bg-zinc-50 border border-zinc-200 rounded py-0.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                                />
+                              ) : (
+                                <span className="text-zinc-400 text-xs">-</span>
                               )}
-
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 align-middle text-right" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-2">
                               {/* Action Button (Mark Done / Replaced) */}
                               {item.lifecycle_type !== 'perishable' && (
                                 <button 
-                                  onClick={() => performAction(item.id)}
+                                  onClick={() => requestAction(item)}
                                   className="px-3 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md transition-colors border border-emerald-200 whitespace-nowrap"
                                 >
                                   {item.lifecycle_type === 'maintenance' ? t('markDone') : t('replaced')}
                                 </button>
                               )}
-
-                              {/* Action Icons */}
-                              <div className="flex items-center gap-1">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (item.store_link) {
-                                      window.open(item.store_link, '_blank');
-                                    } else {
-                                      const searchUrl = lang === 'zh' 
-                                        ? `https://s.taobao.com/search?q=${encodeURIComponent(item.name)}`
-                                        : `https://www.amazon.com/s?k=${encodeURIComponent(item.name)}`;
-                                      window.open(searchUrl, '_blank');
-                                    }
-                                  }}
-                                  className="p-1.5 text-zinc-400 hover:text-emerald-600 transition-colors"
-                                  title={item.store_link ? t('restock') : t('searchOnWeb')}
-                                >
-                                  {item.store_link ? <ShoppingCart className="w-4 h-4" /> : <Search className="w-4 h-4" />}
-                                </button>
-                                <button 
-                                  onClick={() => setItemToDelete(item.id)}
-                                  className="p-1.5 text-zinc-400 hover:text-red-600 transition-colors"
-                                  title={t('delete')}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
+                              <button 
+                                onClick={() => setItemToDelete(item.id)}
+                                className="p-1.5 text-zinc-400 hover:text-red-600 transition-colors"
+                                title={t('delete')}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </td>
-                          <td className="px-6 py-4"></td>
                         </motion.tr>
                       );
                     })}
@@ -655,9 +673,9 @@ function App() {
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-white rounded-2xl shadow-xl w-full max-w-4xl overflow-hidden flex flex-col md:flex-row max-h-[90vh]"
+            className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]"
           >
-            <div className="flex-1 overflow-y-auto p-6 border-b md:border-b-0 md:border-r border-zinc-100">
+            <div className="flex-1 overflow-y-auto p-6">
               <EditItemModal 
                 item={selectedItem}
                 categories={categories}
@@ -671,59 +689,6 @@ function App() {
                 }}
                 isEmbedded={true}
               />
-            </div>
-            <div className="w-full md:w-80 p-6 bg-zinc-50 overflow-y-auto">
-              <h3 className="font-semibold text-zinc-900 mb-4 flex items-center gap-2">
-                <Clock className="w-4 h-4 text-zinc-400" />
-                {t('priceIntelligence')}
-              </h3>
-              
-              <div className="space-y-6">
-                <div>
-                  <div className="text-xs text-zinc-500 uppercase tracking-wider mb-2">{t('priceTrend')}</div>
-                  <PriceTrendChart data={priceHistory} currency={currency} />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
-                    <div className="text-[10px] text-zinc-500 uppercase mb-1">{t('allTimeLow')}</div>
-                    <div className="text-sm font-semibold text-emerald-600">
-                      {priceHistory.length > 0 
-                        ? formatCurrency(Math.min(...priceHistory.map(h => h.price)), currency)
-                        : 'N/A'}
-                    </div>
-                  </div>
-                  <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
-                    <div className="text-[10px] text-zinc-500 uppercase mb-1">{t('avgPrice')}</div>
-                    <div className="text-sm font-semibold text-zinc-900">
-                      {priceHistory.length > 0 
-                        ? formatCurrency(priceHistory.reduce((acc, curr) => acc + curr.price, 0) / priceHistory.length, currency)
-                        : 'N/A'}
-                    </div>
-                  </div>
-                </div>
-
-                {selectedItem.store_link && (
-                  <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm">
-                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-3">{t('source')}</div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-zinc-700">
-                        {selectedItem.store_link.includes('taobao.com') ? 'Taobao' : 
-                         selectedItem.store_link.includes('jd.com') ? 'JD.com' : 
-                         selectedItem.store_link.includes('amazon.com') ? 'Amazon' : 'Web'}
-                      </span>
-                      <a 
-                        href={selectedItem.store_link} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-emerald-600 hover:text-emerald-700"
-                      >
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
           </motion.div>
         </div>
@@ -741,6 +706,56 @@ function App() {
             setShowSettings(false);
           }}
         />
+      )}
+
+      {/* Action Confirmation Modal */}
+      {confirmActionItem && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden p-6"
+          >
+            <div className="flex items-center gap-3 text-emerald-600 mb-4">
+              <RefreshCw className="w-6 h-6" />
+              <h2 className="font-semibold text-lg text-zinc-900">
+                {confirmActionItem.lifecycle_type === 'maintenance' ? t('confirmMaintenance') : t('confirmReplace')}
+              </h2>
+            </div>
+            <p className="text-zinc-600 text-sm mb-6">
+              {confirmActionItem.lifecycle_type === 'maintenance' 
+                ? t('confirmMaintenanceMsg') 
+                : t('confirmReplaceMsg')}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button 
+                onClick={() => setConfirmActionItem(null)}
+                className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-50 rounded-lg transition-colors"
+              >
+                {t('cancel')}
+              </button>
+              <button 
+                onClick={() => performAction(confirmActionItem.id)}
+                className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors"
+              >
+                {t('confirm')}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {showToast && (
+        <motion.div 
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 50 }}
+          className="fixed bottom-6 right-6 bg-emerald-600 text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-3 z-50"
+        >
+          <CheckCircle className="w-5 h-5" />
+          <span className="font-medium text-sm">{toastMessage}</span>
+        </motion.div>
       )}
 
       {/* Delete Confirmation Modal */}
@@ -791,25 +806,35 @@ function StatCard({ title, value, icon, color, textColor = "text-zinc-900" }: an
   );
 }
 
-function StatusBadge({ statusInfo, item, lang }: { statusInfo: any, item: Item, lang: Language }) {
+function StatusBadge({ statusInfo, item, lang, onAction }: { statusInfo: any, item: Item, lang: Language, onAction: (item: Item) => void }) {
   const { t } = useTranslation();
   
   const handleActionClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (statusInfo.actionType === 'restock') {
-      if (item.store_link) {
-        window.open(item.store_link, '_blank');
+      if (item.notes) {
+        // If it's a URL, open it, otherwise search
+        if (item.notes.startsWith('http')) {
+          window.open(item.notes, '_blank');
+        } else {
+          const searchUrl = lang === 'zh' 
+            ? `https://s.taobao.com/search?q=${encodeURIComponent(item.name)}`
+            : `https://www.amazon.com/s?k=${encodeURIComponent(item.name)}`;
+          window.open(searchUrl, '_blank');
+        }
       } else {
         const searchUrl = lang === 'zh' 
           ? `https://s.taobao.com/search?q=${encodeURIComponent(item.name)}`
           : `https://www.amazon.com/s?k=${encodeURIComponent(item.name)}`;
         window.open(searchUrl, '_blank');
       }
+    } else if (statusInfo.actionType === 'maintenance' || statusInfo.actionType === 'replace') {
+      onAction(item);
     }
   };
 
   const BadgeContent = (
-    <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium border shadow-sm transition-all ${statusInfo.color} ${statusInfo.isButton ? 'hover:scale-105 active:scale-95' : ''}`}>
+    <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium border shadow-sm transition-all whitespace-nowrap ${statusInfo.color} ${statusInfo.isButton ? 'hover:scale-105 active:scale-95' : ''}`}>
       {statusInfo.actionType === 'restock' && <ShoppingCart className="w-3 h-3 mr-1.5" />}
       {statusInfo.actionType === 'replace' && <RefreshCw className="w-3 h-3 mr-1.5" />}
       {statusInfo.actionType === 'maintenance' && <Settings className="w-3 h-3 mr-1.5" />}
@@ -838,14 +863,28 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
     category_id: categories[0]?.id || '',
     location_id: locations[0]?.id || '',
     quantity: 1,
+    alert_threshold: 2,
     lifecycle_type: 'perishable' as LifecycleType,
     lifecycle_interval_days: 0,
     last_action_date: new Date().toISOString().split('T')[0],
     expiration_date: '',
-    store_link: '',
-    current_price: ''
+    notes: '',
+    is_permanent: false
   });
   const [saving, setSaving] = useState(false);
+  const [cachedInterval, setCachedInterval] = useState(0);
+
+  // Update formData when permanent toggle changes
+  useEffect(() => {
+    if (formData.is_permanent) {
+      setCachedInterval(formData.lifecycle_interval_days);
+      setFormData(prev => ({ ...prev, lifecycle_interval_days: 0 }));
+    } else {
+      if (formData.lifecycle_interval_days === 0 && cachedInterval > 0) {
+        setFormData(prev => ({ ...prev, lifecycle_interval_days: cachedInterval }));
+      }
+    }
+  }, [formData.is_permanent]);
 
   const handleSmartSearch = () => {
     if (!formData.name) return;
@@ -986,12 +1025,9 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-zinc-700 mb-1">{t('quantity')}</label>
-                <input 
-                  type="number" 
-                  min="0"
+                <SmartNumberInputWithSpinners
                   value={formData.quantity}
-                  onChange={e => setFormData({...formData, quantity: parseInt(e.target.value) || 0})}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  onChange={val => setFormData({...formData, quantity: val})}
                 />
               </div>
               <div>
@@ -1005,73 +1041,65 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">{t('intervalDays')}</label>
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
                 <input 
-                  type="number" 
-                  min="1"
-                  required
-                  value={formData.lifecycle_interval_days}
-                  onChange={e => setFormData({...formData, lifecycle_interval_days: parseInt(e.target.value) || 0})}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  type="checkbox"
+                  id="permanentUse"
+                  checked={formData.is_permanent}
+                  onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
+                  className="w-4 h-4 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
                 />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">
-                  {formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
+                <label htmlFor="permanentUse" className="text-sm font-medium text-zinc-700 select-none">
+                  {t('permanentUse')}
                 </label>
-                <input 
-                  type="date" 
-                  required
-                  value={formData.last_action_date}
-                  onChange={e => setFormData({...formData, last_action_date: e.target.value})}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">{t('intervalDays')}</label>
+                  <SmartNumberInputWithSpinners
+                    min={0}
+                    disabled={formData.is_permanent}
+                    value={formData.lifecycle_interval_days}
+                    onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
+                    className="disabled:bg-zinc-100 disabled:text-zinc-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">
+                    {formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
+                  </label>
+                  <input 
+                    type="date" 
+                    required
+                    value={formData.last_action_date}
+                    onChange={e => setFormData({...formData, last_action_date: e.target.value})}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                </div>
               </div>
             </div>
           )}
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">{t('currentPrice')}</label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-sm">
-                  {currency === 'CNY' ? '¥' : '$'}
-                </span>
-                <input 
-                  type="number" 
-                  step="0.01"
-                  min="0"
-                  value={formData.current_price}
-                  onChange={e => setFormData({...formData, current_price: e.target.value})}
-                  className="w-full pl-7 pr-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  placeholder="0.00"
-                />
-              </div>
+              <label className="block text-sm font-medium text-zinc-700 mb-1">
+                {formData.lifecycle_type === 'perishable' ? t('alertWhenDaysLess') : t('alertWhenBelow')}
+              </label>
+              <SmartNumberInputWithSpinners
+                value={formData.alert_threshold}
+                onChange={val => setFormData({...formData, alert_threshold: val})}
+                unitLabel={formData.lifecycle_type === 'perishable' ? t('thresholdDays') : t('thresholdItems')}
+              />
             </div>
             <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">{t('storeLink')}</label>
-              <div className="flex gap-2">
-                <input 
-                  type="url" 
-                  value={formData.store_link}
-                  onChange={e => setFormData({...formData, store_link: e.target.value})}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  placeholder="https://..."
-                />
-                {formData.store_link && (
-                  <a 
-                    href={formData.store_link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-center px-3 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-zinc-200 transition-colors shrink-0"
-                    title={t('restock')}
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                )}
-              </div>
+              <label className="block text-sm font-medium text-zinc-700 mb-1">{t('notes')}</label>
+              <SmartNotesInput
+                value={formData.notes}
+                onChange={val => setFormData({...formData, notes: val})}
+                placeholder={t('notesPlaceholder')}
+              />
             </div>
           </div>
 

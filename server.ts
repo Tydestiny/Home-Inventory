@@ -43,92 +43,6 @@ async function startServer() {
     }
   });
 
-  // Price Intelligence Logic
-  const updateItemPrice = (itemId: string, newPrice: any, sourcePlatform: string = 'Manual', currency: string = 'USD') => {
-    const item = db.prepare('SELECT * FROM items WHERE id = ?').get(itemId) as any;
-    if (!item) return;
-
-    const priceNum = typeof newPrice === 'string' ? parseFloat(newPrice) : newPrice;
-    if (isNaN(priceNum) || priceNum === null || priceNum === undefined) return;
-
-    // 1. Record in price history
-    const historyId = `ph-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-    db.prepare('INSERT INTO price_history (id, item_id, price, currency, source_platform) VALUES (?, ?, ?, ?, ?)')
-      .run(historyId, itemId, priceNum, currency, sourcePlatform);
-
-    // 2. Update current price in items table
-    db.prepare('UPDATE items SET current_price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .run(priceNum, itemId);
-
-    // 3. Price Drop Detection & All-time Low Logic
-    const stats = db.prepare(`
-      SELECT 
-        AVG(price) as avg_price,
-        MIN(price) as min_price
-      FROM price_history 
-      WHERE item_id = ?
-    `).get(itemId) as { avg_price: number | null, min_price: number | null };
-
-    if (stats) {
-      const isAllTimeLow = stats.min_price === null || priceNum <= stats.min_price;
-
-      // Update is_all_time_low flag in items table
-      db.prepare('UPDATE items SET is_all_time_low = ? WHERE id = ?')
-        .run(isAllTimeLow ? 1 : 0, itemId);
-      
-      if (stats.avg_price !== null) {
-        const dropPercentage = ((stats.avg_price - priceNum) / stats.avg_price) * 100;
-        
-        // If price is 10% lower than average
-        if (dropPercentage >= 10) {
-          const notifId = `notif-${Date.now()}`;
-          db.prepare(`
-            INSERT INTO notifications (id, item_id, type, title, message)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(
-            notifId,
-            itemId,
-            'price_drop',
-            `Price Drop: ${item.name}`,
-            `The price of ${item.name} has dropped to ${currency} ${priceNum}, which is ${dropPercentage.toFixed(1)}% lower than the historical average.`
-          );
-        }
-      }
-    }
-  };
-
-  // External Sync API
-  app.post('/api/external/sync-price', (req, res) => {
-    const { itemId, barcode, name, price, platform, currency = 'CNY' } = req.body;
-    
-    try {
-      let targetItemId = itemId;
-
-      // Try to find item by barcode or name if itemId not provided
-      if (!targetItemId) {
-        if (barcode) {
-          const item = db.prepare('SELECT id FROM items WHERE barcode = ?').get(barcode) as any;
-          if (item) targetItemId = item.id;
-        }
-        if (!targetItemId && name) {
-          const item = db.prepare('SELECT id FROM items WHERE name = ?').get(name) as any;
-          if (item) targetItemId = item.id;
-        }
-      }
-
-      if (!targetItemId) {
-        return res.status(404).json({ error: 'Item not found in inventory' });
-      }
-
-      updateItemPrice(targetItemId, price, platform, currency);
-      const updatedItem = db.prepare('SELECT * FROM items WHERE id = ?').get(targetItemId);
-      res.json({ success: true, item: updatedItem });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Failed to sync price' });
-    }
-  });
-
   // Items API
   app.get('/api/items', (req, res) => {
     try {
@@ -150,7 +64,7 @@ async function startServer() {
     const {
       name, category_id, location_id, purpose, storage_method,
       quantity, expiration_date, restock_frequency_days,
-      current_price, store_link, barcode,
+      alert_threshold, notes, barcode,
       lifecycle_type = 'perishable', lifecycle_interval_days, last_action_date
     } = req.body;
 
@@ -166,13 +80,19 @@ async function startServer() {
       next_action_date = date.toISOString().split('T')[0];
     }
 
+    // Default alert threshold logic
+    let finalThreshold = alert_threshold;
+    if (finalThreshold === undefined || finalThreshold === null) {
+      finalThreshold = lifecycle_type === 'consumable' ? 2 : 5;
+    }
+
     try {
       const stmt = db.prepare(`
         INSERT INTO items (
           id, household_id, location_id, category_id,
           name, purpose, storage_method,
           quantity, expiration_date, restock_frequency_days,
-          current_price, store_link, barcode,
+          alert_threshold, notes, barcode,
           lifecycle_type, lifecycle_interval_days, last_action_date, next_action_date
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
@@ -181,14 +101,10 @@ async function startServer() {
         id, household_id, location_id, category_id,
         name, purpose, storage_method,
         quantity, expiration_date, restock_frequency_days,
-        current_price, store_link, barcode,
+        finalThreshold, notes, barcode,
         lifecycle_type, lifecycle_interval_days, last_action_date, next_action_date
       );
 
-      if (current_price !== undefined && current_price !== null) {
-        updateItemPrice(id, current_price);
-      }
-      
       const newItem = db.prepare(GET_ITEM_QUERY).get(id);
       res.status(201).json(newItem);
     } catch (error) {
@@ -200,8 +116,8 @@ async function startServer() {
   app.put('/api/items/:id', (req, res) => {
     const { id } = req.params;
     const { 
-      name, category_id, location_id, quantity, current_price, 
-      expiration_date, store_link, lifecycle_type, 
+      name, category_id, location_id, quantity, alert_threshold, 
+      expiration_date, notes, lifecycle_type, 
       lifecycle_interval_days, last_action_date 
     } = req.body;
     
@@ -235,9 +151,9 @@ async function startServer() {
       addUpdate('category_id', category_id);
       addUpdate('location_id', location_id);
       addUpdate('quantity', quantity);
-      addUpdate('current_price', current_price);
+      addUpdate('alert_threshold', alert_threshold);
       addUpdate('expiration_date', expiration_date);
-      addUpdate('store_link', store_link);
+      addUpdate('notes', notes);
       addUpdate('lifecycle_type', lifecycle_type);
       addUpdate('lifecycle_interval_days', lifecycle_interval_days);
       addUpdate('last_action_date', last_action_date);
@@ -252,10 +168,6 @@ async function startServer() {
       
       const stmt = db.prepare(`UPDATE items SET ${updates.join(', ')} WHERE id = ?`);
       stmt.run(...values);
-
-      if (current_price !== undefined && current_price !== item.current_price) {
-        updateItemPrice(id, current_price);
-      }
       
       const updatedItem = db.prepare(GET_ITEM_QUERY).get(id);
       res.json(updatedItem);
@@ -273,17 +185,6 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Failed to delete item' });
-    }
-  });
-
-  app.get('/api/items/:id/price-history', (req, res) => {
-    const { id } = req.params;
-    try {
-      const history = db.prepare('SELECT * FROM price_history WHERE item_id = ? ORDER BY recorded_at ASC').all(id);
-      res.json(history);
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Failed to fetch price history' });
     }
   });
 
@@ -309,51 +210,30 @@ async function startServer() {
     }
   });
 
-  app.post('/api/simulate-prices', (req, res) => {
-    try {
-      const items = db.prepare('SELECT id, current_price FROM items WHERE current_price IS NOT NULL AND current_price > 0').all() as any[];
-      const updateStmt = db.prepare('UPDATE items SET current_price = ? WHERE id = ?');
-      
-      db.transaction(() => {
-        for (const item of items) {
-          // Fluctuate price by +/- 5%
-          const change = 1 + (Math.random() * 0.1 - 0.05);
-          const newPrice = parseFloat((item.current_price * change).toFixed(2));
-          updateItemPrice(item.id, newPrice, 'Simulation');
-        }
-      })();
-      
-      res.json({ success: true, count: items.length });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Failed to simulate prices' });
-    }
-  });
-
   app.post('/api/templates/load', (req, res) => {
     try {
       const household_id = 'household-1';
       const templates = [
-        { name: '大米', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, price: 59.90 },
-        { name: '生抽', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, price: 15.50 },
-        { name: '食用油', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, price: 89.90 },
-        { name: '洗脸巾', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 30, qty: 3, price: 19.90 },
-        { name: '牙膏', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 60, qty: 2, price: 25.00 },
-        { name: '洗发水', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 90, qty: 1, price: 45.00 },
-        { name: '空气净化器滤芯', category: 'Home Maintenance', location: 'Living Room', type: 'maintenance', interval: 180, qty: 1, price: 199.00 },
-        { name: '电蚊香液', category: 'Home Maintenance', location: 'Living Room', type: 'consumable', interval: 30, qty: 2, price: 29.90 },
-        { name: '净水器滤芯', category: 'Home Maintenance', location: 'Kitchen', type: 'maintenance', interval: 180, qty: 1, price: 299.00 },
-        { name: '洗洁精', category: 'Cleaning Supplies', location: 'Kitchen', type: 'consumable', interval: 60, qty: 1, price: 12.90 },
-        { name: '洗衣液', category: 'Cleaning Supplies', location: 'Laundry Room', type: 'consumable', interval: 60, qty: 1, price: 49.90 },
-        { name: '垃圾袋', category: 'Cleaning Supplies', location: 'Kitchen', type: 'consumable', interval: 30, qty: 5, price: 9.90 },
-        { name: '卫生纸', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 30, qty: 12, price: 35.90 },
-        { name: '盐', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 2, price: 3.50 },
-        { name: '醋', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, price: 12.00 },
-        { name: '料酒', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, price: 9.90 },
-        { name: '沐浴露', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 90, qty: 1, price: 39.90 },
-        { name: '洗手液', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 60, qty: 2, price: 15.90 },
-        { name: '拖把头', category: 'Cleaning Supplies', location: 'Laundry Room', type: 'maintenance', interval: 90, qty: 1, price: 25.00 },
-        { name: '电池', category: 'Home Maintenance', location: 'Living Room', type: 'consumable', interval: 180, qty: 8, price: 19.90 }
+        { name: '大米', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, threshold: 5 },
+        { name: '生抽', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, threshold: 3 },
+        { name: '食用油', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, threshold: 7 },
+        { name: '洗脸巾', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 30, qty: 3, threshold: 1 },
+        { name: '牙膏', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 60, qty: 2, threshold: 1 },
+        { name: '洗发水', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 90, qty: 1, threshold: 1 },
+        { name: '空气净化器滤芯', category: 'Home Maintenance', location: 'Living Room', type: 'maintenance', interval: 180, qty: 1, threshold: 0 },
+        { name: '电蚊香液', category: 'Home Maintenance', location: 'Living Room', type: 'consumable', interval: 30, qty: 2, threshold: 1 },
+        { name: '净水器滤芯', category: 'Home Maintenance', location: 'Kitchen', type: 'maintenance', interval: 180, qty: 1, threshold: 0 },
+        { name: '洗洁精', category: 'Cleaning Supplies', location: 'Kitchen', type: 'consumable', interval: 60, qty: 1, threshold: 1 },
+        { name: '洗衣液', category: 'Cleaning Supplies', location: 'Laundry Room', type: 'consumable', interval: 60, qty: 1, threshold: 1 },
+        { name: '垃圾袋', category: 'Cleaning Supplies', location: 'Kitchen', type: 'consumable', interval: 30, qty: 5, threshold: 2 },
+        { name: '卫生纸', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 30, qty: 12, threshold: 4 },
+        { name: '盐', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 2, threshold: 3 },
+        { name: '醋', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, threshold: 3 },
+        { name: '料酒', category: 'Groceries', location: 'Kitchen', type: 'perishable', interval: 0, qty: 1, threshold: 3 },
+        { name: '沐浴露', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 90, qty: 1, threshold: 1 },
+        { name: '洗手液', category: 'Toiletries', location: 'Bathroom', type: 'consumable', interval: 60, qty: 2, threshold: 1 },
+        { name: '拖把头', category: 'Cleaning Supplies', location: 'Laundry Room', type: 'maintenance', interval: 90, qty: 1, threshold: 0 },
+        { name: '电池', category: 'Home Maintenance', location: 'Living Room', type: 'consumable', interval: 180, qty: 8, threshold: 2 }
       ];
 
       const categories = db.prepare('SELECT id, name FROM categories').all() as any[];
@@ -364,7 +244,7 @@ async function startServer() {
 
       const stmt = db.prepare(`
         INSERT INTO items (
-          id, household_id, location_id, category_id, name, quantity, current_price,
+          id, household_id, location_id, category_id, name, quantity, alert_threshold,
           lifecycle_type, lifecycle_interval_days, last_action_date, next_action_date
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
@@ -389,8 +269,7 @@ async function startServer() {
             nextDate = d.toISOString().split('T')[0];
           }
 
-          stmt.run(id, household_id, locId, catId, t.name, t.qty, t.price, t.type, t.interval, todayStr, nextDate);
-          updateItemPrice(id, t.price, 'Template', 'CNY');
+          stmt.run(id, household_id, locId, catId, t.name, t.qty, t.threshold, t.type, t.interval, todayStr, nextDate);
         }
       })();
 
@@ -423,10 +302,6 @@ async function startServer() {
       const item = db.prepare('SELECT * FROM items WHERE id = ?').get(id) as any;
       if (!item) return res.status(404).json({ error: 'Item not found' });
 
-      if (item.lifecycle_type === 'perishable') {
-        return res.status(400).json({ error: 'Cannot perform action on perishable item' });
-      }
-
       const today = new Date();
       const nextDate = new Date(today);
       nextDate.setDate(nextDate.getDate() + (item.lifecycle_interval_days || 0));
@@ -434,8 +309,14 @@ async function startServer() {
       const lastActionStr = today.toISOString().split('T')[0];
       const nextActionStr = nextDate.toISOString().split('T')[0];
 
-      db.prepare('UPDATE items SET last_action_date = ?, next_action_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(lastActionStr, nextActionStr, id);
+      db.transaction(() => {
+        db.prepare('UPDATE items SET last_action_date = ?, next_action_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+          .run(lastActionStr, nextActionStr, id);
+
+        if ((item.lifecycle_type === 'consumable' || item.lifecycle_type === 'perishable') && item.quantity > 0) {
+          db.prepare('UPDATE items SET quantity = quantity - 1 WHERE id = ?').run(id);
+        }
+      })();
 
       const updatedItem = db.prepare(GET_ITEM_QUERY).get(id);
       res.json(updatedItem);

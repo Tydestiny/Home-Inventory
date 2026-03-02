@@ -18,9 +18,8 @@ export interface Item {
   expiration_date?: string; // Legacy/Perishable specific
   
   restock_frequency_days?: number;
-  historical_price?: number;
-  current_price?: number;
-  store_link?: string;
+  alert_threshold?: number; // Quantity for consumables, days for perishables
+  notes?: string;
   barcode?: string;
   created_at: string;
   updated_at: string;
@@ -28,28 +27,16 @@ export interface Item {
   // Joined fields
   category_name?: string;
   location_name?: string;
-
-  // Price Intelligence
-  is_all_time_low?: boolean;
 }
 
 export interface Notification {
   id: string;
   item_id?: string;
-  type: 'price_drop' | 'low_stock' | 'action_overdue';
+  type: 'threshold_alert' | 'low_stock' | 'action_overdue';
   title: string;
   message: string;
   is_read: number;
   created_at: string;
-}
-
-export interface PriceHistory {
-  id: string;
-  item_id: string;
-  price: number;
-  currency: string;
-  source_platform: string;
-  recorded_at: string;
 }
 
 export interface Category {

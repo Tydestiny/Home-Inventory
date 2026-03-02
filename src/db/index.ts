@@ -77,24 +77,13 @@ db.exec(`
     expiration_date DATE, -- Legacy/Perishable specific
     
     restock_frequency_days INTEGER,
+    alert_threshold INTEGER,
     
-    historical_price REAL,
-    current_price REAL,
-    store_link TEXT,
+    notes TEXT,
     barcode TEXT,
-    is_all_time_low INTEGER DEFAULT 0,
     
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS price_history (
-    id TEXT PRIMARY KEY,
-    item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
-    price REAL NOT NULL,
-    currency TEXT DEFAULT 'USD',
-    source_platform TEXT DEFAULT 'Manual',
-    recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS notifications (
@@ -123,13 +112,16 @@ try {
 } catch (e) {}
 
 try {
-  db.exec('ALTER TABLE items ADD COLUMN is_all_time_low INTEGER DEFAULT 0');
+  db.exec('ALTER TABLE items ADD COLUMN alert_threshold INTEGER');
 } catch (e) {}
 
 try {
-  db.exec('ALTER TABLE price_history ADD COLUMN currency TEXT DEFAULT "USD"');
-  db.exec('ALTER TABLE price_history ADD COLUMN source_platform TEXT DEFAULT "Manual"');
-} catch (e) {}
+  db.exec('ALTER TABLE items RENAME COLUMN store_link TO notes');
+} catch (e) {
+  try {
+    db.exec('ALTER TABLE items ADD COLUMN notes TEXT');
+  } catch (e2) {}
+}
 
 // Cleanup bilingual names (Migration for existing items with "Name (Translation)")
 try {
@@ -178,7 +170,7 @@ if (userCount.count === 0) {
   });
 
   // Seed locations
-  const locations = ['Kitchen Pantry', 'Fridge', 'Master Bathroom', 'Laundry Room', 'Utility Closet', 'Bedroom', 'Wardrobe', 'Storage Room'];
+  const locations = ['Kitchen Pantry', 'Fridge', 'Master Bathroom', 'Laundry Room', 'Utility Closet', 'Bedroom', 'Wardrobe'];
   const insertLocation = db.prepare('INSERT INTO locations (id, household_id, name) VALUES (?, ?, ?)');
   locations.forEach((loc, index) => {
     insertLocation.run(`loc-${index + 1}`, householdId, loc);
