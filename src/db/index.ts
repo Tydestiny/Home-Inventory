@@ -82,6 +82,7 @@ db.exec(`
     current_price REAL,
     store_link TEXT,
     barcode TEXT,
+    is_all_time_low INTEGER DEFAULT 0,
     
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -91,7 +92,19 @@ db.exec(`
     id TEXT PRIMARY KEY,
     item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
     price REAL NOT NULL,
+    currency TEXT DEFAULT 'USD',
+    source_platform TEXT DEFAULT 'Manual',
     recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    is_read INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS settings (
@@ -107,8 +120,33 @@ try {
   db.exec('ALTER TABLE items ADD COLUMN lifecycle_interval_days INTEGER');
   db.exec('ALTER TABLE items ADD COLUMN last_action_date DATETIME');
   db.exec('ALTER TABLE items ADD COLUMN next_action_date DATETIME');
+} catch (e) {}
+
+try {
+  db.exec('ALTER TABLE items ADD COLUMN is_all_time_low INTEGER DEFAULT 0');
+} catch (e) {}
+
+try {
+  db.exec('ALTER TABLE price_history ADD COLUMN currency TEXT DEFAULT "USD"');
+  db.exec('ALTER TABLE price_history ADD COLUMN source_platform TEXT DEFAULT "Manual"');
+} catch (e) {}
+
+// Cleanup bilingual names (Migration for existing items with "Name (Translation)")
+try {
+  // Handles "Name (Translation)", "Name(Translation)", "Name（Translation）"
+  db.exec(`
+    UPDATE items 
+    SET name = TRIM(
+      CASE 
+        WHEN INSTR(name, '(') > 0 THEN SUBSTR(name, 1, INSTR(name, '(') - 1)
+        WHEN INSTR(name, '（') > 0 THEN SUBSTR(name, 1, INSTR(name, '（') - 1)
+        ELSE name
+      END
+    )
+    WHERE name LIKE '%(%)' OR name LIKE '%（%）'
+  `);
 } catch (e) {
-  // Columns already exist
+  console.error('Failed to cleanup bilingual names:', e);
 }
 
 // Ensure settings exist for household-1
@@ -140,7 +178,7 @@ if (userCount.count === 0) {
   });
 
   // Seed locations
-  const locations = ['Kitchen Pantry', 'Fridge', 'Master Bathroom', 'Laundry Room', 'Utility Closet'];
+  const locations = ['Kitchen Pantry', 'Fridge', 'Master Bathroom', 'Laundry Room', 'Utility Closet', 'Bedroom', 'Wardrobe', 'Storage Room'];
   const insertLocation = db.prepare('INSERT INTO locations (id, household_id, name) VALUES (?, ?, ?)');
   locations.forEach((loc, index) => {
     insertLocation.run(`loc-${index + 1}`, householdId, loc);

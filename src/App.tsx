@@ -3,23 +3,28 @@ import { motion } from 'motion/react';
 import { 
   Package, AlertTriangle, CheckCircle, Clock, 
   Plus, Search, Filter, MoreVertical, ShoppingCart,
-  Camera, Trash2, Bell, RefreshCw, Download, Settings
+  Camera, Trash2, Bell, RefreshCw, Download, Settings,
+  ExternalLink
 } from 'lucide-react';
-import { Item, Category, Location, SmartPreset, LifecycleType } from './types';
+import { Item, Category, Location, SmartPreset, LifecycleType, Notification as AppNotification, PriceHistory } from './types';
 import { SmartScanModal } from './components/SmartScanModal';
 import { EditItemModal } from './components/EditItemModal';
 import { SettingsModal } from './components/SettingsModal';
-import { Language, Currency, useTranslation, formatCurrency } from './i18n';
+import PriceTrendChart from './components/PriceTrendChart';
+import { Language, Currency, formatCurrency } from './i18n';
+import { useTranslation } from 'react-i18next';
 
 function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [presets, setPresets] = useState<SmartPreset[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
   const [selectedItem, setSelectedItem] = useState<Item | null>(null);
+  const [priceHistory, setPriceHistory] = useState<PriceHistory[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<LifecycleType | 'all'>('all');
   const [showFilterMenu, setShowFilterMenu] = useState(false);
@@ -31,12 +36,58 @@ function App() {
   const [lang, setLang] = useState<Language>('en');
   const [currency, setCurrency] = useState<Currency>('USD');
 
-  const t = useTranslation(lang);
+  const { t, i18n } = useTranslation();
+
+  useEffect(() => {
+    i18n.changeLanguage(lang);
+  }, [lang, i18n]);
 
   useEffect(() => {
     fetchData();
     fetchSettings();
+    fetchNotifications();
   }, []);
+
+  useEffect(() => {
+    if (selectedItem) {
+      fetchPriceHistory(selectedItem.id);
+    } else {
+      setPriceHistory([]);
+    }
+  }, [selectedItem]);
+
+  const fetchNotifications = async () => {
+    try {
+      const res = await fetch('/api/notifications');
+      if (res.ok) {
+        setNotifications(await res.json());
+      }
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+    }
+  };
+
+  const fetchPriceHistory = async (itemId: string) => {
+    try {
+      const res = await fetch(`/api/items/${itemId}/price-history`);
+      if (res.ok) {
+        setPriceHistory(await res.json());
+      }
+    } catch (error) {
+      console.error('Error fetching price history:', error);
+    }
+  };
+
+  const markNotificationRead = async (id: string) => {
+    try {
+      const res = await fetch(`/api/notifications/${id}/read`, { method: 'PUT' });
+      if (res.ok) {
+        setNotifications(notifications.map(n => n.id === id ? { ...n, is_read: 1 } : n));
+      }
+    } catch (error) {
+      console.error('Error marking notification as read:', error);
+    }
+  };
 
   const fetchSettings = async () => {
     try {
@@ -161,30 +212,94 @@ function App() {
   };
 
   // Analytics logic
-  const getStatus = (item: Item) => {
-    if (item.quantity === 0 && item.lifecycle_type === 'perishable') return 'empty';
-    
-    if (item.next_action_date) {
-      const daysUntilAction = Math.ceil((new Date(item.next_action_date).getTime() - new Date().getTime()) / (1000 * 3600 * 24));
-      if (daysUntilAction < 0) return 'action-overdue';
-      if (daysUntilAction <= 7) return 'action-soon';
+  const getItemStatus = (item: Item) => {
+    const now = new Date();
+    const actionDate = item.next_action_date ? new Date(item.next_action_date) : null;
+    const daysUntilAction = actionDate ? Math.ceil((actionDate.getTime() - now.getTime()) / (1000 * 3600 * 24)) : null;
+
+    const isLowStock = item.quantity <= 1;
+    const isOutOfStock = item.quantity === 0;
+    const isOverdue = daysUntilAction !== null && daysUntilAction < 0;
+    const isSoon = daysUntilAction !== null && daysUntilAction <= 7;
+
+    // Priority 1: Overdue / Expired (Usage Trigger)
+    if (isOverdue) {
+      return {
+        label: item.lifecycle_type === 'maintenance' ? t('maintenanceOverdue') : item.lifecycle_type === 'consumable' ? t('timeToReplace') : t('expired'),
+        color: 'bg-red-100 text-red-700 border-red-200',
+        actionType: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'replace',
+        isButton: false,
+        statusKey: 'action-overdue'
+      };
     }
-    
-    if (item.lifecycle_type === 'perishable' && item.quantity <= 1) return 'low';
-    return 'good';
+
+    // Priority 2: Critical Restock (Price Intelligence + Low Stock)
+    if (isLowStock && item.is_all_time_low) {
+      return {
+        label: t('restockNow'),
+        color: 'bg-red-600 text-white border-red-700 animate-pulse',
+        actionType: 'restock',
+        isButton: true,
+        statusKey: 'critical-restock'
+      };
+    }
+
+    // Priority 3: Out of Stock
+    if (isOutOfStock) {
+      return {
+        label: t('outOfStock'),
+        color: 'bg-red-100 text-red-700 border-red-200',
+        actionType: 'restock',
+        isButton: true,
+        statusKey: 'empty'
+      };
+    }
+
+    // Priority 4: Usage Trigger Soon
+    if (isSoon) {
+      return {
+        label: item.lifecycle_type === 'maintenance' ? t('maintainSoon') : item.lifecycle_type === 'consumable' ? t('replaceSoon') : t('expiringSoon'),
+        color: 'bg-amber-100 text-amber-700 border-amber-200',
+        actionType: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'replace',
+        isButton: false,
+        statusKey: 'action-soon'
+      };
+    }
+
+    // Priority 5: Low Stock
+    if (isLowStock) {
+      return {
+        label: t('restockSoon'),
+        color: 'bg-amber-100 text-amber-700 border-amber-200',
+        actionType: 'restock',
+        isButton: true,
+        statusKey: 'low'
+      };
+    }
+
+    return {
+      label: t('healthy'),
+      color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+      actionType: 'none',
+      isButton: false,
+      statusKey: 'good'
+    };
   };
 
   const stats = {
     total: items.length,
-    critical: items.filter(i => ['empty', 'action-overdue'].includes(getStatus(i))).length,
-    warning: items.filter(i => ['action-soon', 'low'].includes(getStatus(i))).length,
-    healthy: items.filter(i => getStatus(i) === 'good').length,
+    critical: items.filter(i => {
+      const s = getItemStatus(i);
+      return ['empty', 'action-overdue', 'critical-restock'].includes(s.statusKey);
+    }).length,
+    warning: items.filter(i => {
+      const s = getItemStatus(i);
+      return ['action-soon', 'low'].includes(s.statusKey);
+    }).length,
+    healthy: items.filter(i => getItemStatus(i).statusKey === 'good').length,
   };
 
-  const notifications = items.filter(i => {
-    const status = getStatus(i);
-    return ['empty', 'action-overdue', 'action-soon', 'low'].includes(status);
-  });
+  const unreadNotifications = notifications.filter(n => !n.is_read);
 
   const filteredItems = items.filter(item => {
     const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -210,7 +325,7 @@ function App() {
                 title={t('smartReminders')}
               >
                 <Bell className="w-5 h-5" />
-                {notifications.length > 0 && (
+                {unreadNotifications.length > 0 && (
                   <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
                 )}
               </button>
@@ -218,20 +333,34 @@ function App() {
                 <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-lg border border-zinc-100 py-2 z-30">
                   <div className="px-4 py-2 border-b border-zinc-100 flex justify-between items-center">
                     <h3 className="font-semibold text-sm">{t('smartReminders')}</h3>
-                    <span className="text-xs bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{notifications.length}</span>
+                    <span className="text-xs bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{unreadNotifications.length}</span>
                   </div>
-                  <div className="max-h-64 overflow-y-auto">
+                  <div className="max-h-80 overflow-y-auto">
                     {notifications.length === 0 ? (
                       <div className="px-4 py-6 text-center text-sm text-zinc-500">{t('noReminders')}</div>
                     ) : (
                       notifications.map(n => (
-                        <div key={n.id} className="px-4 py-3 hover:bg-zinc-50 border-b border-zinc-50 last:border-0 cursor-pointer" onClick={() => { setSelectedItem(n); setShowNotifications(false); }}>
+                        <div 
+                          key={n.id} 
+                          className={`px-4 py-3 hover:bg-zinc-50 border-b border-zinc-50 last:border-0 cursor-pointer ${!n.is_read ? 'bg-emerald-50/30' : ''}`} 
+                          onClick={() => { 
+                            if (n.item_id) {
+                              const item = items.find(i => i.id === n.item_id);
+                              if (item) setSelectedItem(item);
+                            }
+                            markNotificationRead(n.id);
+                            setShowNotifications(false); 
+                          }}
+                        >
                           <div className="flex justify-between items-start mb-1">
-                            <span className="font-medium text-sm text-zinc-900">{n.name}</span>
-                            <StatusBadge status={getStatus(n)} item={n} lang={lang} />
+                            <span className={`font-medium text-sm ${!n.is_read ? 'text-emerald-900' : 'text-zinc-900'}`}>{n.title}</span>
+                            {!n.is_read && <span className="w-2 h-2 bg-emerald-500 rounded-full mt-1.5"></span>}
                           </div>
-                          <div className="text-xs text-zinc-500">
-                            {n.location_name} • {n.category_name}
+                          <div className="text-xs text-zinc-500 leading-relaxed">
+                            {n.message}
+                          </div>
+                          <div className="text-[10px] text-zinc-400 mt-2">
+                            {new Date(n.created_at).toLocaleString()}
                           </div>
                         </div>
                       ))
@@ -402,7 +531,7 @@ function App() {
                   </thead>
                   <tbody className="divide-y divide-zinc-100">
                     {filteredItems.map(item => {
-                      const status = getStatus(item);
+                      const statusInfo = getItemStatus(item);
                       return (
                         <motion.tr 
                           key={item.id}
@@ -411,79 +540,76 @@ function App() {
                           className="hover:bg-zinc-50/50 transition-colors group cursor-pointer"
                           onClick={() => setSelectedItem(item)}
                         >
-                          <td className="px-6 py-4">
+                          <td className="px-6 py-4 align-middle">
                             <div className="font-medium text-zinc-900">{item.name}</div>
                             <div className="text-zinc-500 text-xs mt-0.5 capitalize">
-                              {t(item.lifecycle_type as any)} • {item.category_name}
+                              {t(item.lifecycle_type as any)} • {t(item.category_name as any)}
                               {item.current_price && ` • ${formatCurrency(item.current_price, currency)}`}
                             </div>
                           </td>
-                          <td className="px-6 py-4 text-zinc-600">
-                            {item.location_name}
+                          <td className="px-6 py-4 text-zinc-600 align-middle">
+                            {t(item.location_name as any)}
                           </td>
-                          <td className="px-6 py-4">
-                            <StatusBadge status={status} item={item} lang={lang} />
+                          <td className="px-6 py-4 align-middle">
+                            <StatusBadge statusInfo={statusInfo} item={item} lang={lang} />
                           </td>
-                          <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                            {item.lifecycle_type === 'perishable' ? (
-                              <div className="flex items-center justify-end gap-3">
-                                <button 
-                                  onClick={() => updateQuantity(item.id, Math.max(0, item.quantity - 1))}
-                                  className="w-6 h-6 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors"
-                                >-</button>
-                                <span className="font-mono w-4 text-center">{item.quantity}</span>
-                                <button 
-                                  onClick={() => updateQuantity(item.id, item.quantity + 1)}
-                                  className="w-6 h-6 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors"
-                                >+</button>
-                              </div>
-                            ) : (
-                              <div className="flex justify-end">
+                          <td className="px-6 py-4 align-middle" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-6">
+                              {/* Quantity Controls */}
+                              {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') && (
+                                <div className="flex items-center gap-3">
+                                  <button 
+                                    onClick={() => updateQuantity(item.id, Math.max(0, item.quantity - 1))}
+                                    className="w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors border border-zinc-200"
+                                  >-</button>
+                                  <span className="font-mono w-4 text-center font-medium">{item.quantity}</span>
+                                  <button 
+                                    onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                                    className="w-7 h-7 flex items-center justify-center rounded-full bg-zinc-100 text-zinc-600 hover:bg-zinc-200 transition-colors border border-zinc-200"
+                                  >+</button>
+                                </div>
+                              )}
+
+                              {/* Action Button (Mark Done / Replaced) */}
+                              {item.lifecycle_type !== 'perishable' && (
                                 <button 
                                   onClick={() => performAction(item.id)}
-                                  className="px-3 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md transition-colors border border-emerald-200"
+                                  className="px-3 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md transition-colors border border-emerald-200 whitespace-nowrap"
                                 >
                                   {item.lifecycle_type === 'maintenance' ? t('markDone') : t('replaced')}
                                 </button>
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {item.store_link ? (
-                                <a 
-                                  href={item.store_link} 
-                                  target="_blank" 
-                                  rel="noreferrer"
-                                  className="p-1.5 text-zinc-400 hover:text-emerald-600 transition-colors"
-                                  title={t('restock')}
-                                >
-                                  <ShoppingCart className="w-4 h-4" />
-                                </a>
-                              ) : (
+                              )}
+
+                              {/* Action Icons */}
+                              <div className="flex items-center gap-1">
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    const searchUrl = lang === 'zh' 
-                                      ? `https://s.taobao.com/search?q=${encodeURIComponent(item.name)}`
-                                      : `https://www.amazon.com/s?k=${encodeURIComponent(item.name)}`;
-                                    window.open(searchUrl, '_blank');
+                                    if (item.store_link) {
+                                      window.open(item.store_link, '_blank');
+                                    } else {
+                                      const searchUrl = lang === 'zh' 
+                                        ? `https://s.taobao.com/search?q=${encodeURIComponent(item.name)}`
+                                        : `https://www.amazon.com/s?k=${encodeURIComponent(item.name)}`;
+                                      window.open(searchUrl, '_blank');
+                                    }
                                   }}
                                   className="p-1.5 text-zinc-400 hover:text-emerald-600 transition-colors"
-                                  title={t('searchOnWeb')}
+                                  title={item.store_link ? t('restock') : t('searchOnWeb')}
                                 >
-                                  <Search className="w-4 h-4" />
+                                  {item.store_link ? <ShoppingCart className="w-4 h-4" /> : <Search className="w-4 h-4" />}
                                 </button>
-                              )}
-                              <button 
-                                onClick={() => setItemToDelete(item.id)}
-                                className="p-1.5 text-zinc-400 hover:text-red-600 transition-colors"
-                                title={t('delete')}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                                <button 
+                                  onClick={() => setItemToDelete(item.id)}
+                                  className="p-1.5 text-zinc-400 hover:text-red-600 transition-colors"
+                                  title={t('delete')}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
                             </div>
                           </td>
+                          <td className="px-6 py-4"></td>
                         </motion.tr>
                       );
                     })}
@@ -525,18 +651,82 @@ function App() {
 
       {/* Edit Item Modal */}
       {selectedItem && (
-        <EditItemModal 
-          item={selectedItem}
-          categories={categories}
-          locations={locations}
-          lang={lang}
-          currency={currency}
-          onClose={() => setSelectedItem(null)}
-          onUpdate={(updatedItem) => {
-            setItems(items.map(i => i.id === updatedItem.id ? updatedItem : i));
-            setSelectedItem(null);
-          }}
-        />
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-2xl shadow-xl w-full max-w-4xl overflow-hidden flex flex-col md:flex-row max-h-[90vh]"
+          >
+            <div className="flex-1 overflow-y-auto p-6 border-b md:border-b-0 md:border-r border-zinc-100">
+              <EditItemModal 
+                item={selectedItem}
+                categories={categories}
+                locations={locations}
+                lang={lang}
+                currency={currency}
+                onClose={() => setSelectedItem(null)}
+                onUpdate={(updatedItem) => {
+                  setItems(items.map(i => i.id === updatedItem.id ? updatedItem : i));
+                  setSelectedItem(null);
+                }}
+                isEmbedded={true}
+              />
+            </div>
+            <div className="w-full md:w-80 p-6 bg-zinc-50 overflow-y-auto">
+              <h3 className="font-semibold text-zinc-900 mb-4 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-zinc-400" />
+                {t('priceIntelligence')}
+              </h3>
+              
+              <div className="space-y-6">
+                <div>
+                  <div className="text-xs text-zinc-500 uppercase tracking-wider mb-2">{t('priceTrend')}</div>
+                  <PriceTrendChart data={priceHistory} currency={currency} />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
+                    <div className="text-[10px] text-zinc-500 uppercase mb-1">{t('allTimeLow')}</div>
+                    <div className="text-sm font-semibold text-emerald-600">
+                      {priceHistory.length > 0 
+                        ? formatCurrency(Math.min(...priceHistory.map(h => h.price)), currency)
+                        : 'N/A'}
+                    </div>
+                  </div>
+                  <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
+                    <div className="text-[10px] text-zinc-500 uppercase mb-1">{t('avgPrice')}</div>
+                    <div className="text-sm font-semibold text-zinc-900">
+                      {priceHistory.length > 0 
+                        ? formatCurrency(priceHistory.reduce((acc, curr) => acc + curr.price, 0) / priceHistory.length, currency)
+                        : 'N/A'}
+                    </div>
+                  </div>
+                </div>
+
+                {selectedItem.store_link && (
+                  <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm">
+                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-3">{t('source')}</div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-zinc-700">
+                        {selectedItem.store_link.includes('taobao.com') ? 'Taobao' : 
+                         selectedItem.store_link.includes('jd.com') ? 'JD.com' : 
+                         selectedItem.store_link.includes('amazon.com') ? 'Amazon' : 'Web'}
+                      </span>
+                      <a 
+                        href={selectedItem.store_link} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-emerald-600 hover:text-emerald-700"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        </div>
       )}
 
       {/* Settings Modal */}
@@ -601,29 +791,48 @@ function StatCard({ title, value, icon, color, textColor = "text-zinc-900" }: an
   );
 }
 
-function StatusBadge({ status, item, lang }: { status: string, item: Item, lang: Language }) {
-  const t = useTranslation(lang);
-  if (status === 'empty') {
-    return <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-700 border border-red-200">{t('outOfStock')}</span>;
+function StatusBadge({ statusInfo, item, lang }: { statusInfo: any, item: Item, lang: Language }) {
+  const { t } = useTranslation();
+  
+  const handleActionClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (statusInfo.actionType === 'restock') {
+      if (item.store_link) {
+        window.open(item.store_link, '_blank');
+      } else {
+        const searchUrl = lang === 'zh' 
+          ? `https://s.taobao.com/search?q=${encodeURIComponent(item.name)}`
+          : `https://www.amazon.com/s?k=${encodeURIComponent(item.name)}`;
+        window.open(searchUrl, '_blank');
+      }
+    }
+  };
+
+  const BadgeContent = (
+    <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium border shadow-sm transition-all ${statusInfo.color} ${statusInfo.isButton ? 'hover:scale-105 active:scale-95' : ''}`}>
+      {statusInfo.actionType === 'restock' && <ShoppingCart className="w-3 h-3 mr-1.5" />}
+      {statusInfo.actionType === 'replace' && <RefreshCw className="w-3 h-3 mr-1.5" />}
+      {statusInfo.actionType === 'maintenance' && <Settings className="w-3 h-3 mr-1.5" />}
+      {statusInfo.label}
+    </span>
+  );
+
+  if (statusInfo.isButton) {
+    return (
+      <button 
+        onClick={handleActionClick}
+        className="focus:outline-none"
+      >
+        {BadgeContent}
+      </button>
+    );
   }
-  if (status === 'action-overdue') {
-    return <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-red-100 text-red-700 border border-red-200">
-      {item.lifecycle_type === 'maintenance' ? t('maintenanceOverdue') : item.lifecycle_type === 'consumable' ? t('replaceNow') : t('expired')}
-    </span>;
-  }
-  if (status === 'action-soon') {
-    return <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200">
-      {item.lifecycle_type === 'maintenance' ? t('maintainSoon') : item.lifecycle_type === 'consumable' ? t('replaceSoon') : t('expiringSoon')}
-    </span>;
-  }
-  if (status === 'low') {
-    return <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200">{t('lowStock')}</span>;
-  }
-  return <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-emerald-100 text-emerald-700 border border-emerald-200">{t('healthy')}</span>;
+
+  return BadgeContent;
 }
 
 function AddItemModal({ categories, locations, presets, lang, currency, onClose, onAdd }: any) {
-  const t = useTranslation(lang);
+  const { t } = useTranslation();
   const [formData, setFormData] = useState({
     name: '',
     category_id: categories[0]?.id || '',
@@ -638,6 +847,14 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
   });
   const [saving, setSaving] = useState(false);
 
+  const handleSmartSearch = () => {
+    if (!formData.name) return;
+    const searchUrl = lang === 'zh' 
+      ? `https://s.taobao.com/search?q=${encodeURIComponent(formData.name)}`
+      : `https://www.amazon.com/s?k=${encodeURIComponent(formData.name)}`;
+    window.open(searchUrl, '_blank');
+  };
+
   const handlePresetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const presetId = e.target.value;
     if (!presetId) return;
@@ -645,7 +862,7 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
     if (preset) {
       setFormData(prev => ({
         ...prev,
-        name: preset.name,
+        name: t(preset.name),
         category_id: preset.category_id,
         lifecycle_type: preset.lifecycle_type,
         lifecycle_interval_days: preset.lifecycle_interval_days,
@@ -694,7 +911,7 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
               >
                 <option value="">-- {t('selectPreset')} --</option>
                 {presets.map((p: SmartPreset) => (
-                  <option key={p.id} value={p.id}>{p.name} ({p.lifecycle_interval_days} {t('days')})</option>
+                  <option key={p.id} value={p.id}>{t(p.name)} ({p.lifecycle_interval_days} {t('days')})</option>
                 ))}
               </select>
             </div>
@@ -702,14 +919,24 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
 
           <div>
             <label className="block text-sm font-medium text-zinc-700 mb-1">{t('name')} *</label>
-            <input 
-              required
-              type="text" 
-              value={formData.name}
-              onChange={e => setFormData({...formData, name: e.target.value})}
-              className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-              placeholder={lang === 'zh' ? '例如：牛奶' : 'e.g., Almond Milk'}
-            />
+            <div className="flex gap-2">
+              <input 
+                required
+                type="text" 
+                value={formData.name}
+                onChange={e => setFormData({...formData, name: e.target.value})}
+                className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                placeholder={lang === 'zh' ? '例如：牛奶' : 'e.g., Almond Milk'}
+              />
+              <button
+                type="button"
+                onClick={handleSmartSearch}
+                className="flex items-center justify-center px-3 bg-zinc-50 text-zinc-600 border border-zinc-200 rounded-lg hover:bg-zinc-100 transition-colors shrink-0"
+                title={t('searchOnWeb')}
+              >
+                <Search className="w-4 h-4" />
+              </button>
+            </div>
           </div>
           
           <div className="grid grid-cols-2 gap-4">
@@ -720,7 +947,7 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
                 onChange={e => setFormData({...formData, category_id: e.target.value})}
                 className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
               >
-                {categories.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {categories.map((c: any) => <option key={c.id} value={c.id}>{t(c.name as any)}</option>)}
               </select>
             </div>
             <div>
@@ -730,7 +957,7 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
                 onChange={e => setFormData({...formData, location_id: e.target.value})}
                 className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
               >
-                {locations.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                {locations.map((l: any) => <option key={l.id} value={l.id}>{t(l.name as any)}</option>)}
               </select>
             </div>
           </div>
@@ -825,13 +1052,26 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
             </div>
             <div>
               <label className="block text-sm font-medium text-zinc-700 mb-1">{t('storeLink')}</label>
-              <input 
-                type="url" 
-                value={formData.store_link}
-                onChange={e => setFormData({...formData, store_link: e.target.value})}
-                className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                placeholder="https://..."
-              />
+              <div className="flex gap-2">
+                <input 
+                  type="url" 
+                  value={formData.store_link}
+                  onChange={e => setFormData({...formData, store_link: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  placeholder="https://..."
+                />
+                {formData.store_link && (
+                  <a 
+                    href={formData.store_link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-center px-3 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-zinc-200 transition-colors shrink-0"
+                    title={t('restock')}
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                )}
+              </div>
             </div>
           </div>
 

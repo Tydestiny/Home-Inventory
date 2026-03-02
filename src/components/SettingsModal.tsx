@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { X, Globe, DollarSign } from 'lucide-react';
 import { Language, Currency } from '../i18n';
+import { useTranslation } from 'react-i18next';
 
 interface SettingsModalProps {
   currentLanguage: Language;
@@ -11,6 +12,7 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSave }: SettingsModalProps) {
+  const { t } = useTranslation();
   const [lang, setLang] = useState<Language>(currentLanguage);
   const [curr, setCurr] = useState<Currency>(currentCurrency);
   const [saving, setSaving] = useState(false);
@@ -108,14 +110,14 @@ export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSav
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
           >
-            Cancel
+            {t('cancel')}
           </button>
           <button 
             onClick={handleSave}
             disabled={saving}
             className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-50"
           >
-            {saving ? 'Saving...' : 'Save Settings'}
+            {saving ? t('saving') : t('saveChanges')}
           </button>
         </div>
       </motion.div>

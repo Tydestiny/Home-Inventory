@@ -1,160 +1,24 @@
-export const translations = {
-  en: {
-    appTitle: 'Home Inventory',
-    addItem: 'Add Item',
-    smartScan: 'Smart Scan',
-    simulatePrices: 'Simulate Price Changes',
-    smartReminders: 'Smart Reminders',
-    totalItems: 'Total Items',
-    critical: 'Critical',
-    warning: 'Warning',
-    healthy: 'Healthy',
-    searchPlaceholder: 'Search items, categories...',
-    filter: 'Filter',
-    allTypes: 'All Types',
-    perishable: 'Perishable',
-    consumable: 'Consumable',
-    maintenance: 'Maintenance',
-    noItemsFound: 'No items found',
-    tryAdjusting: 'Try adjusting your search or add a new item.',
-    loadTemplate: 'Load Starter Template',
-    loading: 'Loading...',
-    name: 'Name',
-    location: 'Location',
-    status: 'Status',
-    action: 'Action',
-    replaced: 'Replaced',
-    markDone: 'Mark Done',
-    restock: 'Restock',
-    searchOnWeb: 'Search on Web',
-    editItem: 'Edit Item',
-    saveChanges: 'Save Changes',
-    cancel: 'Cancel',
-    category: 'Category',
-    quantity: 'Quantity',
-    expDate: 'Exp. Date',
-    intervalDays: 'Interval (Days)',
-    firstUsed: 'First Used',
-    lastMaintained: 'Last Maintained',
-    currentPrice: 'Current Price',
-    storeLink: 'Store Link',
-    priceTrend: 'Price Trend',
-    settings: 'Settings',
-    language: 'Language',
-    currency: 'Currency',
-    priceAlert: 'Price Alert',
-    priceLowerThanAvg: 'Current price is lower than historical average! Good time to restock.',
-    inventoryHealth: 'Inventory Health',
-    outOfStock: 'Out of Stock',
-    maintenanceOverdue: 'Maintenance Overdue',
-    replaceNow: 'Replace Now',
-    expired: 'Expired',
-    maintainSoon: 'Maintain Soon',
-    replaceSoon: 'Replace Soon',
-    expiringSoon: 'Expiring Soon',
-    lowStock: 'Low Stock',
-    usePreset: 'Use a Smart Preset',
-    selectPreset: 'Select a preset',
-    days: 'days',
-    deleteItem: 'Delete Item',
-    deleteConfirm: 'Are you sure you want to delete this item? This action cannot be undone.',
-    delete: 'Delete',
-    noReminders: 'No pending reminders.',
-    lifecycleType: 'Lifecycle Type',
-    takePhotoOrUpload: 'Take a photo or upload',
-    snapPicture: 'Snap a picture of a receipt, a pantry shelf, or a product to automatically extract items.',
-    openCamera: 'Open Camera',
-    analyzingImage: 'Analyzing image with Gemini AI...',
-    foundItems: 'Found {count} Items',
-    reviewBeforeSaving: 'Review before saving',
-    type: 'Type',
-    saveItems: 'Save {count} Items',
-    saving: 'Saving...',
-    analyzing: 'Analyzing...'
-  },
-  zh: {
-    appTitle: '家庭库存管理',
-    addItem: '添加物品',
-    smartScan: '智能扫描',
-    simulatePrices: '模拟价格变化',
-    smartReminders: '智能提醒',
-    totalItems: '总物品',
-    critical: '严重',
-    warning: '警告',
-    healthy: '健康',
-    searchPlaceholder: '搜索物品、分类...',
-    filter: '筛选',
-    allTypes: '所有类型',
-    perishable: '易腐物品',
-    consumable: '消耗品',
-    maintenance: '维护任务',
-    noItemsFound: '未找到物品',
-    tryAdjusting: '请尝试调整搜索条件或添加新物品。',
-    loadTemplate: '加载初始模板',
-    loading: '加载中...',
-    name: '名称',
-    location: '位置',
-    status: '状态',
-    action: '操作',
-    replaced: '已更换',
-    markDone: '已完成',
-    restock: '补货',
-    searchOnWeb: '在网页搜索',
-    editItem: '编辑物品',
-    saveChanges: '保存更改',
-    cancel: '取消',
-    category: '分类',
-    quantity: '数量',
-    expDate: '过期日期',
-    intervalDays: '周期 (天)',
-    firstUsed: '首次使用',
-    lastMaintained: '上次维护',
-    currentPrice: '当前价格',
-    storeLink: '购买链接',
-    priceTrend: '价格趋势',
-    settings: '设置',
-    language: '语言',
-    currency: '货币',
-    priceAlert: '价格提醒',
-    priceLowerThanAvg: '当前价格低于历史平均水平！是补货的好时机。',
-    inventoryHealth: '库存健康状态',
-    outOfStock: '缺货',
-    maintenanceOverdue: '逾期未维护',
-    replaceNow: '立即更换',
-    expired: '已过期',
-    maintainSoon: '即将需要维护',
-    replaceSoon: '即将需要更换',
-    expiringSoon: '即将过期',
-    lowStock: '库存不足',
-    usePreset: '使用智能预设',
-    selectPreset: '选择预设',
-    days: '天',
-    deleteItem: '删除物品',
-    deleteConfirm: '您确定要删除这个物品吗？此操作无法撤销。',
-    delete: '删除',
-    noReminders: '暂无待办提醒。',
-    lifecycleType: '生命周期类型',
-    takePhotoOrUpload: '拍照或上传',
-    snapPicture: '拍摄收据、食品储藏室货架或产品的照片以自动提取物品。',
-    openCamera: '打开相机',
-    analyzingImage: '正在使用 Gemini AI 分析图片...',
-    foundItems: '找到 {count} 个物品',
-    reviewBeforeSaving: '保存前请核对',
-    type: '类型',
-    saveItems: '保存 {count} 个物品',
-    saving: '保存中...',
-    analyzing: '分析中...'
-  }
-};
+import i18n from 'i18next';
+import { initReactI18next } from 'react-i18next';
+import enTranslation from './locales/en/translation.json';
+import zhTranslation from './locales/zh/translation.json';
+
+i18n
+  .use(initReactI18next)
+  .init({
+    resources: {
+      en: { translation: enTranslation },
+      zh: { translation: zhTranslation }
+    },
+    lng: 'en', // default language
+    fallbackLng: 'en',
+    interpolation: {
+      escapeValue: false // react already safes from xss
+    }
+  });
 
 export type Language = 'en' | 'zh';
 export type Currency = 'USD' | 'CNY';
-
-export const useTranslation = (lang: Language) => {
-  return (key: keyof typeof translations.en) => {
-    return translations[lang][key] || translations.en[key];
-  };
-};
 
 export const formatCurrency = (amount: number, currency: Currency) => {
   if (currency === 'CNY') {
@@ -171,3 +35,5 @@ export const formatDate = (dateString: string, lang: Language) => {
   }
   return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 };
+
+export default i18n;
