@@ -13,6 +13,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { SmartNumberInputWithSpinners, SmartNotesInput } from './components/FormControls';
 import { Language, Currency, formatCurrency } from './i18n';
 import { useTranslation } from 'react-i18next';
+import { storageService } from './services/storage';
 
 function App() {
   const [items, setItems] = useState<Item[]>([]);
@@ -52,10 +53,8 @@ function App() {
 
   const fetchNotifications = async () => {
     try {
-      const res = await fetch('/api/notifications');
-      if (res.ok) {
-        setNotifications(await res.json());
-      }
+      const data = storageService.getNotifications();
+      setNotifications(data);
     } catch (error) {
       console.error('Error fetching notifications:', error);
     }
@@ -63,10 +62,8 @@ function App() {
 
   const markNotificationRead = async (id: string) => {
     try {
-      const res = await fetch(`/api/notifications/${id}/read`, { method: 'PUT' });
-      if (res.ok) {
-        setNotifications(notifications.map(n => n.id === id ? { ...n, is_read: 1 } : n));
-      }
+      storageService.markNotificationRead(id);
+      setNotifications(notifications.map(n => n.id === id ? { ...n, is_read: 1 } : n));
     } catch (error) {
       console.error('Error marking notification as read:', error);
     }
@@ -74,12 +71,9 @@ function App() {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch('/api/settings');
-      if (res.ok) {
-        const data = await res.json();
-        setLang(data.language);
-        setCurrency(data.currency);
-      }
+      const data = storageService.getSettings();
+      setLang(data.language as Language);
+      setCurrency(data.currency as Currency);
     } catch (error) {
       console.error('Error fetching settings:', error);
     }
@@ -88,17 +82,19 @@ function App() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [itemsRes, catRes, locRes, presetsRes] = await Promise.all([
-        fetch('/api/items'),
-        fetch('/api/categories'),
-        fetch('/api/locations'),
-        fetch('/api/presets')
-      ]);
+      const data = storageService.getData();
       
-      if (itemsRes.ok) setItems(await itemsRes.json());
-      if (catRes.ok) setCategories(await catRes.json());
-      if (locRes.ok) setLocations(await locRes.json());
-      if (presetsRes.ok) setPresets(await presetsRes.json());
+      // Map category and location names to items for easier rendering
+      const enrichedItems = data.items.map(item => ({
+        ...item,
+        category_name: data.categories.find(c => c.id === item.category_id)?.name || 'Unknown',
+        location_name: data.locations.find(l => l.id === item.location_id)?.name || 'Unknown'
+      }));
+
+      setItems(enrichedItems);
+      setCategories(data.categories);
+      setLocations(data.locations);
+      setPresets(data.presets);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
@@ -109,10 +105,8 @@ function App() {
   const confirmDelete = async () => {
     if (!itemToDelete) return;
     try {
-      const res = await fetch(`/api/items/${itemToDelete}`, { method: 'DELETE' });
-      if (res.ok) {
-        setItems(items.filter(item => item.id !== itemToDelete));
-      }
+      storageService.deleteItem(itemToDelete);
+      setItems(items.filter(item => item.id !== itemToDelete));
     } catch (error) {
       console.error('Error deleting item:', error);
     } finally {
@@ -122,28 +116,33 @@ function App() {
 
   const updateQuantity = async (id: string, newQuantity: number) => {
     try {
-      const res = await fetch(`/api/items/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quantity: newQuantity })
-      });
-      if (res.ok) {
-        setItems(items.map(item => item.id === id ? { ...item, quantity: newQuantity } : item));
+      const item = items.find(i => i.id === id);
+      if (item) {
+        const updatedItem = { ...item, quantity: newQuantity };
+        storageService.saveItem(updatedItem);
+        // No need to enrich here as it's already enriched in state
+        setItems(items.map(i => i.id === id ? updatedItem : i));
       }
     } catch (error) {
       console.error('Error updating quantity:', error);
     }
   };
 
+  const enrichItem = (item: Item) => ({
+    ...item,
+    category_name: categories.find(c => c.id === item.category_id)?.name || 'Unknown',
+    location_name: locations.find(l => l.id === item.location_id)?.name || 'Unknown'
+  });
+
   const performAction = async (id: string) => {
     try {
-      const res = await fetch(`/api/items/${id}/action`, { method: 'POST' });
-      if (res.ok) {
-        const updatedItem = await res.json();
-        setItems(items.map(item => item.id === id ? updatedItem : item));
+      const updatedItem = storageService.performAction(id);
+      if (updatedItem) {
+        setItems(items.map(item => item.id === id ? enrichItem(updatedItem) : item));
         setToastMessage(t('actionSuccess'));
         setShowToast(true);
         setTimeout(() => setShowToast(false), 3000);
+        fetchNotifications();
       }
     } catch (error) {
       console.error('Error performing action:', error);
@@ -158,17 +157,14 @@ function App() {
 
   const addMultipleItems = async (itemsToAdd: any[]) => {
     try {
-      // We can add them one by one or create a bulk endpoint. 
-      // For simplicity, we'll do Promise.all with the existing POST endpoint.
-      await Promise.all(itemsToAdd.map(item => 
-        fetch('/api/items', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(item)
-        })
-      ));
-      fetchData();
+      const savedItems = itemsToAdd.map(item => storageService.saveItem({
+        ...item,
+        id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        household_id: 'household-1'
+      }));
+      setItems([...items, ...savedItems.map(enrichItem)]);
       setShowScanModal(false);
+      fetchNotifications();
     } catch (error) {
       console.error('Error adding multiple items:', error);
       throw error;
@@ -178,10 +174,8 @@ function App() {
   const loadTemplate = async () => {
     setLoadingTemplate(true);
     try {
-      const res = await fetch('/api/templates/load', { method: 'POST' });
-      if (res.ok) {
-        fetchData();
-      }
+      storageService.loadStarterTemplate();
+      fetchData();
     } catch (error) {
       console.error('Error loading template:', error);
     } finally {
@@ -189,13 +183,51 @@ function App() {
     }
   };
 
+  const saveSettings = async (newLang: Language, newCurr: Currency) => {
+    try {
+      storageService.saveSettings({ language: newLang, currency: newCurr });
+      setLang(newLang);
+      setCurrency(newCurr);
+      setShowSettings(false);
+    } catch (error) {
+      console.error('Error saving settings:', error);
+    }
+  };
+
+  const addItem = async (newItem: any) => {
+    try {
+      const item = storageService.saveItem({
+        ...newItem,
+        id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        household_id: 'household-1'
+      });
+      setItems([...items, enrichItem(item)]);
+      setShowAddModal(false);
+      fetchNotifications();
+    } catch (error) {
+      console.error('Error adding item:', error);
+    }
+  };
+
+  const updateItem = async (updatedItem: Item) => {
+    try {
+      storageService.saveItem(updatedItem);
+      setItems(items.map(i => i.id === updatedItem.id ? enrichItem(updatedItem) : i));
+      setSelectedItem(null);
+      fetchNotifications();
+    } catch (error) {
+      console.error('Error updating item:', error);
+    }
+  };
+
   const simulatePrices = async () => {
     setSimulatingPrices(true);
     try {
-      const res = await fetch('/api/simulate-prices', { method: 'POST' });
-      if (res.ok) {
-        fetchData();
-      }
+      // Client-side simulation: just wait a bit and show a message
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      setToastMessage(t('actionSuccess'));
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 3000);
     } catch (error) {
       console.error('Error simulating prices:', error);
     } finally {
@@ -559,82 +591,151 @@ function App() {
               <p className="text-zinc-500 text-sm mt-1">{t('tryAdjusting')}</p>
             </div>
           ) : (
-            <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-sm">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm table-fixed">
-                  <thead className="bg-zinc-50 border-b border-zinc-200 text-zinc-500">
-                    <tr>
-                      <th className="px-6 py-3 font-medium w-3/12">{t('name')}</th>
-                      <th className="px-6 py-3 font-medium w-2/12">{t('location')}</th>
-                      <th className="px-6 py-3 font-medium w-2/12">{t('status')}</th>
-                      <th className="px-6 py-3 font-medium w-3/12 text-center">{t('quantityControl')}</th>
-                      <th className="px-6 py-3 font-medium w-2/12 text-right">{t('action')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-100">
-                    {filteredItems.map(item => {
-                      const statusInfo = getItemStatus(item);
-                      return (
-                        <motion.tr 
-                          key={item.id}
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          className="hover:bg-zinc-50/50 transition-colors group cursor-pointer"
-                          onClick={() => setSelectedItem(item)}
-                        >
-                          <td className="px-6 py-4 align-middle truncate">
-                            <div className="font-medium text-zinc-900 truncate" title={item.name}>{item.name}</div>
-                            <div className="text-zinc-500 text-xs mt-0.5 capitalize truncate">
-                              {t(item.lifecycle_type as any)} • {t(item.category_name as any)}
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 text-zinc-600 align-middle truncate">
-                            {t(item.location_name as any)}
-                          </td>
-                          <td className="px-6 py-4 align-middle">
-                            <StatusBadge statusInfo={statusInfo} item={item} lang={lang} onAction={requestAction} />
-                          </td>
-                          <td className="px-6 py-4 align-middle" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center justify-center gap-3">
-                              {/* Quantity Controls */}
-                              {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') ? (
-                                <SmartNumberInputWithSpinners
-                                  value={item.quantity}
-                                  onChange={(val) => updateQuantity(item.id, val)}
-                                  className="font-mono w-16 font-medium bg-zinc-50 border border-zinc-200 rounded py-0.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                                />
-                              ) : (
-                                <span className="text-zinc-400 text-xs">-</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 align-middle text-right" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center justify-end gap-2">
-                              {/* Action Button (Mark Done / Replaced) */}
-                              {item.lifecycle_type !== 'perishable' && (
+            <>
+              {/* Desktop Table View */}
+              <div className="hidden md:block bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm table-fixed">
+                    <thead className="bg-zinc-50 border-b border-zinc-200 text-zinc-500">
+                      <tr>
+                        <th className="px-6 py-3 font-medium w-3/12 text-left">{t('name')}</th>
+                        <th className="px-6 py-3 font-medium w-2/12 text-center">{t('location')}</th>
+                        <th className="px-6 py-3 font-medium w-2/12 text-center">{t('status')}</th>
+                        <th className="px-6 py-3 font-medium w-3/12 text-center">{t('quantityControl')}</th>
+                        <th className="px-6 py-3 font-medium w-2/12 text-center">{t('action')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {filteredItems.map(item => {
+                        const statusInfo = getItemStatus(item);
+                        return (
+                          <motion.tr 
+                            key={item.id}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            className="hover:bg-zinc-50/50 transition-colors group cursor-pointer"
+                            onClick={() => setSelectedItem(item)}
+                          >
+                            <td className="px-6 py-4 align-middle">
+                              <div className="font-medium text-zinc-900 break-words" title={item.name}>{item.name}</div>
+                              <div className="text-zinc-500 text-xs mt-0.5 capitalize">
+                                {t(item.lifecycle_type as any)} • {t(item.category_name as any)}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-zinc-600 align-middle text-center">
+                              {t(item.location_name as any)}
+                            </td>
+                            <td className="px-6 py-4 align-middle text-center">
+                              <div className="flex justify-center">
+                                <StatusBadge statusInfo={statusInfo} item={item} lang={lang} onAction={requestAction} />
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 align-middle text-center" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex items-center justify-center">
+                                {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') ? (
+                                  <SmartNumberInputWithSpinners
+                                    value={item.quantity}
+                                    onChange={(val) => updateQuantity(item.id, val)}
+                                    className="font-mono w-20 font-medium bg-zinc-50 border border-zinc-200 rounded py-0.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-center"
+                                  />
+                                ) : (
+                                  <span className="text-zinc-400 text-xs">-</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 align-middle text-center" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex items-center justify-center gap-2">
+                                {item.lifecycle_type !== 'perishable' && (
+                                  <button 
+                                    onClick={() => requestAction(item)}
+                                    className="px-3 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md transition-colors border border-emerald-200 whitespace-nowrap"
+                                  >
+                                    {item.lifecycle_type === 'maintenance' ? t('markDone') : t('replaced')}
+                                  </button>
+                                )}
                                 <button 
-                                  onClick={() => requestAction(item)}
-                                  className="px-3 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md transition-colors border border-emerald-200 whitespace-nowrap"
+                                  onClick={() => setItemToDelete(item.id)}
+                                  className="p-1.5 text-zinc-400 hover:text-red-600 transition-colors"
+                                  title={t('delete')}
                                 >
-                                  {item.lifecycle_type === 'maintenance' ? t('markDone') : t('replaced')}
+                                  <Trash2 className="w-4 h-4" />
                                 </button>
-                              )}
-                              <button 
-                                onClick={() => setItemToDelete(item.id)}
-                                className="p-1.5 text-zinc-400 hover:text-red-600 transition-colors"
-                                title={t('delete')}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </motion.tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                              </div>
+                            </td>
+                          </motion.tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
+
+              {/* Mobile Card View */}
+              <div className="md:hidden space-y-4">
+                {filteredItems.map(item => {
+                  const statusInfo = getItemStatus(item);
+                  return (
+                    <motion.div 
+                      key={item.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="bg-white rounded-xl border border-zinc-200 shadow-sm overflow-hidden"
+                      onClick={() => setSelectedItem(item)}
+                    >
+                      {/* Card Header */}
+                      <div className="p-4 border-b border-zinc-100">
+                        <div className="flex justify-between items-start gap-2">
+                          <div>
+                            <h3 className="font-semibold text-zinc-900 text-base break-words">{item.name}</h3>
+                            <p className="text-zinc-500 text-xs mt-1">
+                              {t(item.category_name as any)} • {t(item.location_name as any)}
+                            </p>
+                          </div>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setItemToDelete(item.id); }}
+                            className="p-2 text-zinc-400 hover:text-red-600 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Card Body */}
+                      <div className="p-4 flex items-center justify-between bg-zinc-50/30">
+                        <StatusBadge statusInfo={statusInfo} item={item} lang={lang} onAction={requestAction} />
+                        
+                        <div onClick={(e) => e.stopPropagation()}>
+                          {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-zinc-500 font-medium uppercase tracking-wider">{t('quantity')}</span>
+                              <SmartNumberInputWithSpinners
+                                value={item.quantity}
+                                onChange={(val) => updateQuantity(item.id, val)}
+                                className="font-mono w-20 font-medium bg-white border border-zinc-200 rounded py-1 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-center"
+                              />
+                            </div>
+                          ) : (
+                            <span className="text-zinc-400 text-xs italic">{t(item.lifecycle_type as any)}</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Card Footer / Actions */}
+                      {item.lifecycle_type !== 'perishable' && (
+                        <div className="p-3 border-t border-zinc-100 bg-white" onClick={(e) => e.stopPropagation()}>
+                          <button 
+                            onClick={() => requestAction(item)}
+                            className="w-full py-2.5 text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg shadow-sm shadow-emerald-200 transition-all active:scale-[0.98]"
+                          >
+                            {item.lifecycle_type === 'maintenance' ? t('markDone') : t('replaced')}
+                          </button>
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </section>
       </main>
@@ -648,10 +749,7 @@ function App() {
           lang={lang}
           currency={currency}
           onClose={() => setShowAddModal(false)}
-          onAdd={() => {
-            setShowAddModal(false);
-            fetchData();
-          }}
+          onAdd={addItem}
         />
       )}
 
@@ -683,10 +781,7 @@ function App() {
                 lang={lang}
                 currency={currency}
                 onClose={() => setSelectedItem(null)}
-                onUpdate={(updatedItem) => {
-                  setItems(items.map(i => i.id === updatedItem.id ? updatedItem : i));
-                  setSelectedItem(null);
-                }}
+                onUpdate={updateItem}
                 isEmbedded={true}
               />
             </div>
@@ -700,10 +795,12 @@ function App() {
           currentLanguage={lang}
           currentCurrency={currency}
           onClose={() => setShowSettings(false)}
-          onSave={(l, c) => {
-            setLang(l);
-            setCurrency(c);
+          onSave={saveSettings}
+          onDataImported={() => {
             setShowSettings(false);
+            fetchData();
+            fetchSettings();
+            fetchNotifications();
           }}
         />
       )}
@@ -910,23 +1007,9 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
-    try {
-      const res = await fetch('/api/items', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
-      });
-      if (res.ok) {
-        onAdd();
-      }
-    } catch (error) {
-      console.error('Error adding item:', error);
-    } finally {
-      setSaving(false);
-    }
+    onAdd(formData);
   };
 
   return (
@@ -940,7 +1023,7 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
           <h2 className="font-semibold text-lg">{t('addItem')}</h2>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600">×</button>
         </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+        <form onSubmit={handleSubmit} className="p-6 sm:px-8 space-y-4 max-h-[80vh] overflow-y-auto">
           {presets && presets.length > 0 && (
             <div className="mb-4 p-3 bg-zinc-50 rounded-lg border border-zinc-200">
               <label className="block text-sm font-medium text-zinc-700 mb-1">{t('usePreset')}</label>
@@ -1021,8 +1104,58 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
             </div>
           </div>
 
-          {formData.lifecycle_type === 'perishable' ? (
-            <div className="grid grid-cols-2 gap-4">
+          {/* Top Row: Date (60%) + Alert Days (40%) */}
+          <div className="flex gap-3 items-start">
+            {/* 左侧：日期框占 60% */}
+            <div className="w-[60%] shrink-0">
+              <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
+                {formData.lifecycle_type === 'perishable' ? t('expDate') : 
+                formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
+              </label>
+              <input 
+                type="date" 
+                required={formData.lifecycle_type !== 'perishable'}
+                value={formData.lifecycle_type === 'perishable' ? formData.expiration_date : formData.last_action_date}
+                onChange={e => {
+                  if (formData.lifecycle_type === 'perishable') {
+                    setFormData({...formData, expiration_date: e.target.value});
+                  } else {
+                    setFormData({...formData, last_action_date: e.target.value});
+                  }
+                }}
+                // 这里的 h-[42px] 强制高度与右侧 SmartNumberInput 保持物理一致
+                className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+              />
+            </div>
+
+            {/* 右侧：预警天数占 40% */}
+            <div className="w-[40%] shrink-0">
+              <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
+                {formData.lifecycle_type === 'perishable' 
+                  ? t('alertWhenDaysLess') 
+                  : formData.lifecycle_type === 'maintenance' 
+                    ? t('alertBeforeMaintenance') 
+                    : t('alertWhenBelow')}
+              </label>
+              <div className="flex items-center gap-1.5 h-[42px]">
+                <div className="flex-1 min-w-0">
+                  <SmartNumberInputWithSpinners
+                    value={formData.alert_threshold}
+                    onChange={val => setFormData({...formData, alert_threshold: val})}
+                    // 确保内部输入框高度充满 42px
+                    className="w-full h-full"
+                  />
+                </div>
+                {/* 单位文字：确保不折行，位置微调 */}
+                <span className="text-xs text-zinc-500 shrink-0 whitespace-nowrap">
+                  {formData.lifecycle_type === 'consumable' ? t('thresholdItems') : t('thresholdDays')}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            {formData.lifecycle_type === 'perishable' ? (
               <div>
                 <label className="block text-sm font-medium text-zinc-700 mb-1">{t('quantity')}</label>
                 <SmartNumberInputWithSpinners
@@ -1030,69 +1163,32 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
                   onChange={val => setFormData({...formData, quantity: val})}
                 />
               </div>
+            ) : (
               <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">{t('expDate')}</label>
-                <input 
-                  type="date" 
-                  value={formData.expiration_date}
-                  onChange={e => setFormData({...formData, expiration_date: e.target.value})}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-zinc-700">{t('intervalDays')}</label>
+                  <div className="flex items-center gap-1.5">
+                    <input 
+                      type="checkbox"
+                      id="permanentUseAdd"
+                      checked={formData.is_permanent}
+                      onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
+                      className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
+                    />
+                    <label htmlFor="permanentUseAdd" className="text-xs text-zinc-500 select-none">
+                      {t('permanentUse')}
+                    </label>
+                  </div>
+                </div>
+                <SmartNumberInputWithSpinners
+                  min={0}
+                  disabled={formData.is_permanent}
+                  value={formData.lifecycle_interval_days}
+                  onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
+                  className="disabled:bg-zinc-100 disabled:text-zinc-400"
                 />
               </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <input 
-                  type="checkbox"
-                  id="permanentUse"
-                  checked={formData.is_permanent}
-                  onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
-                  className="w-4 h-4 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
-                />
-                <label htmlFor="permanentUse" className="text-sm font-medium text-zinc-700 select-none">
-                  {t('permanentUse')}
-                </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-zinc-700 mb-1">{t('intervalDays')}</label>
-                  <SmartNumberInputWithSpinners
-                    min={0}
-                    disabled={formData.is_permanent}
-                    value={formData.lifecycle_interval_days}
-                    onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
-                    className="disabled:bg-zinc-100 disabled:text-zinc-400"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-zinc-700 mb-1">
-                    {formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
-                  </label>
-                  <input 
-                    type="date" 
-                    required
-                    value={formData.last_action_date}
-                    onChange={e => setFormData({...formData, last_action_date: e.target.value})}
-                    className="w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">
-                {formData.lifecycle_type === 'perishable' ? t('alertWhenDaysLess') : t('alertWhenBelow')}
-              </label>
-              <SmartNumberInputWithSpinners
-                value={formData.alert_threshold}
-                onChange={val => setFormData({...formData, alert_threshold: val})}
-                unitLabel={formData.lifecycle_type === 'perishable' ? t('thresholdDays') : t('thresholdItems')}
-              />
-            </div>
+            )}
             <div>
               <label className="block text-sm font-medium text-zinc-700 mb-1">{t('notes')}</label>
               <SmartNotesInput

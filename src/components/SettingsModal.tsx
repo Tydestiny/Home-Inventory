@@ -1,38 +1,57 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { X, Globe, DollarSign } from 'lucide-react';
+import { X, Globe, DollarSign, Download, Upload, Database } from 'lucide-react';
 import { Language, Currency } from '../i18n';
 import { useTranslation } from 'react-i18next';
+import { storageService } from '../services/storage';
 
 interface SettingsModalProps {
   currentLanguage: Language;
   currentCurrency: Currency;
   onClose: () => void;
   onSave: (lang: Language, curr: Currency) => void;
+  onDataImported: () => void;
 }
 
-export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSave }: SettingsModalProps) {
+export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSave, onDataImported }: SettingsModalProps) {
   const { t } = useTranslation();
   const [lang, setLang] = useState<Language>(currentLanguage);
   const [curr, setCurr] = useState<Currency>(currentCurrency);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const handleSave = async () => {
-    setSaving(true);
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ language: lang, currency: curr })
-      });
-      if (res.ok) {
-        onSave(lang, curr);
-      }
-    } catch (error) {
-      console.error('Error saving settings:', error);
-    } finally {
-      setSaving(false);
+    onSave(lang, curr);
+  };
+
+  const handleExport = () => {
+    storageService.exportData();
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!confirm(t('importConfirm'))) {
+      e.target.value = '';
+      return;
     }
+
+    setImporting(true);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      const success = storageService.importData(content);
+      if (success) {
+        alert(t('importSuccess'));
+        onDataImported();
+      } else {
+        alert(t('importError'));
+      }
+      setImporting(false);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   return (
@@ -102,6 +121,36 @@ export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSav
               >
                 CNY (¥)
               </button>
+            </div>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm font-medium text-zinc-700 mb-3">
+              <Database className="w-4 h-4" /> {t('dataManagement')}
+            </label>
+            <div className="space-y-3">
+              <button
+                onClick={handleExport}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-zinc-700 bg-white border border-zinc-200 rounded-lg hover:bg-zinc-50 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                {t('exportData')}
+              </button>
+              <div className="relative">
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleImport}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                  disabled={importing}
+                />
+                <button
+                  type="button"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-zinc-700 bg-white border border-zinc-200 rounded-lg hover:bg-zinc-50 transition-colors"
+                >
+                  <Upload className="w-4 h-4" />
+                  {importing ? t('loading') : t('importData')}
+                </button>
+              </div>
             </div>
           </div>
         </div>

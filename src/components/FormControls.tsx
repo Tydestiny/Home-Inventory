@@ -37,8 +37,13 @@ export function SmartNumberInput({ value, onChange, min = 0, className = '', uni
     }
   };
 
+  // Extract width classes from className to apply to container
+  const widthMatch = className.match(/w-\d+|w-full|w-auto|max-w-\S+/);
+  const widthClass = widthMatch ? widthMatch[0] : 'w-full';
+  const otherClasses = className.replace(/w-\d+|w-full|w-auto|max-w-\S+/, '').trim();
+
   return (
-    <div className="relative flex items-center w-full">
+    <div className={`relative flex items-center ${widthClass}`}>
       <input
         type="number"
         min={min}
@@ -46,7 +51,7 @@ export function SmartNumberInput({ value, onChange, min = 0, className = '', uni
         disabled={disabled}
         onChange={handleChange}
         onFocus={handleFocus}
-        className={`w-full pl-3 ${unitLabel ? 'pr-10' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${className}`}
+        className={`w-full pl-3 ${unitLabel ? 'pr-10' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${otherClasses}`}
       />
       {unitLabel && (
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-medium pointer-events-none">
@@ -78,8 +83,15 @@ export function SmartNumberInputWithSpinners({ value, onChange, min = 0, classNa
     }
   };
 
+  // Extract width and height classes from className to apply to container
+  const widthMatch = className.match(/w-\d+|w-full|w-auto|max-w-\S+/);
+  const heightMatch = className.match(/h-\d+|h-full|h-auto|min-h-\S+/);
+  const widthClass = widthMatch ? widthMatch[0] : 'w-full';
+  const heightClass = heightMatch ? heightMatch[0] : '';
+  const otherClasses = className.replace(/w-\d+|w-full|w-auto|max-w-\S+|h-\d+|h-full|h-auto|min-h-\S+/g, '').trim();
+
   return (
-    <div className="relative flex items-center w-full">
+    <div className={`relative flex items-center ${widthClass} ${heightClass}`}>
       <input
         type="number"
         min={min}
@@ -87,7 +99,7 @@ export function SmartNumberInputWithSpinners({ value, onChange, min = 0, classNa
         disabled={disabled}
         onChange={handleChange}
         onFocus={handleFocus}
-        className={`w-full pl-3 ${unitLabel ? 'pr-14' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all ${className}`}
+        className={`w-full h-full pl-3 ${unitLabel ? 'pr-14' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all ${otherClasses}`}
       />
       {unitLabel && (
         <span className="absolute right-8 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-medium pointer-events-none z-10">
