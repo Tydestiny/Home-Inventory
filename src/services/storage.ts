@@ -1,4 +1,4 @@
-import { Item, Category, Location, SmartPreset, Notification, LifecycleType } from '../types';
+import { Item, Batch, Category, Location, SmartPreset, Notification, LifecycleType } from '../types';
 
 const STORAGE_KEY = 'home_inventory_data';
 const SETTINGS_KEY = 'home_inventory_settings';
@@ -39,7 +39,74 @@ const DEFAULT_PRESETS: SmartPreset[] = [
   { id: 'p-7', name: 'Bath Towel', category_id: 'cat-3', lifecycle_type: 'consumable', lifecycle_interval_days: 365 },
 ];
 
+export function calculateSmartThreshold(expirationDate: string): number {
+  if (!expirationDate) return 14;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(expirationDate);
+  end.setHours(0, 0, 0, 0);
+  const diffDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 3600 * 24));
+  
+  if (diffDays < 30) return 3;
+  if (diffDays <= 180) return 14;
+  return 30;
+}
+
 export const storageService = {
+  initializeSmartBatchSystem() {
+    const data = this.getData();
+    let migrated = false;
+
+    // Aggressive grouping by trimmed, lowercase name
+    const groupedProducts = new Map<string, Item>();
+
+    data.items.forEach(item => {
+      const normalizedName = item.name.trim().toLowerCase();
+      
+      // If item already has batches, we still want to check if it can be merged with others of the same name
+      const existingProduct = groupedProducts.get(normalizedName);
+
+      if (existingProduct) {
+        migrated = true;
+        // Merge batches
+        const batchesToMerge = item.batches || [{
+          id: `batch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          quantity: item.quantity ?? 1,
+          expiration_date: item.expiration_date,
+          added_date: item.created_at || new Date().toISOString(),
+          notes: item.notes
+        }];
+        
+        existingProduct.batches.push(...batchesToMerge);
+        // Update product metadata if necessary (keep the oldest created_at)
+        if (new Date(item.created_at) < new Date(existingProduct.created_at)) {
+          existingProduct.created_at = item.created_at;
+        }
+      } else {
+        if (!item.batches) {
+          migrated = true;
+          item.batches = [{
+            id: `batch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            quantity: item.quantity ?? 1,
+            expiration_date: item.expiration_date,
+            added_date: item.created_at || new Date().toISOString(),
+            notes: item.notes
+          }];
+          // Remove legacy fields to clean up
+          delete item.quantity;
+          delete item.expiration_date;
+          delete item.notes;
+        }
+        groupedProducts.set(normalizedName, item);
+      }
+    });
+
+    if (migrated) {
+      data.items = Array.from(groupedProducts.values());
+      this.saveData(data);
+    }
+  },
+
   getData(): StorageData {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
@@ -73,20 +140,146 @@ export const storageService = {
   },
 
   getItems(): Item[] {
-    return this.getData().items;
+    this.initializeSmartBatchSystem();
+    const items = this.getData().items;
+    
+    // Compute total_quantity and soonest_expiration_date on the fly
+    return items.map(item => {
+      if (!item.batches) return item;
+      
+      // Sort batches by expiration date (earliest first)
+      const sortedBatches = [...item.batches].sort((a, b) => {
+        if (!a.expiration_date) return 1;
+        if (!b.expiration_date) return -1;
+        return new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime();
+      });
+
+      const total_quantity = sortedBatches.reduce((sum, b) => sum + b.quantity, 0);
+      const soonest_expiration_date = sortedBatches.find(b => b.expiration_date)?.expiration_date || null;
+
+      return {
+        ...item,
+        batches: sortedBatches,
+        total_quantity,
+        soonest_expiration_date,
+        // Sync legacy quantity for backward compatibility during transition
+        quantity: total_quantity,
+        expiration_date: soonest_expiration_date || undefined
+      };
+    });
   },
 
   saveItem(item: Item) {
     const data = this.getData();
-    const index = data.items.findIndex(i => i.id === item.id);
-    if (index > -1) {
-      data.items[index] = { ...item, updated_at: new Date().toISOString() };
+    const normalizedName = item.name.trim().toLowerCase();
+    
+    // Check if a product with this name already exists (excluding current item if editing)
+    const existingIndex = data.items.findIndex(i => 
+      i.name.trim().toLowerCase() === normalizedName && i.id !== item.id
+    );
+
+    if (existingIndex > -1) {
+      // Merge into existing product
+      const existingProduct = data.items[existingIndex];
+      
+      // If the item being saved is a "new" item (no batches yet or different ID), append its batches
+      if (item.batches && item.id !== existingProduct.id) {
+        existingProduct.batches.push(...item.batches);
+      } else if (!item.batches) {
+        // Legacy add or simple add
+        existingProduct.batches.push({
+          id: `batch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          quantity: item.quantity ?? 1,
+          expiration_date: item.expiration_date,
+          added_date: new Date().toISOString(),
+          notes: item.notes
+        });
+      }
+      
+      existingProduct.updated_at = new Date().toISOString();
+      // If we were editing an item and changed its name to an existing one, delete the old ID entry
+      data.items = data.items.filter(i => i.id !== item.id || i.id === existingProduct.id);
     } else {
-      data.items.push({ ...item, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+      // Normal save or update
+      const index = data.items.findIndex(i => i.id === item.id);
+      if (index > -1) {
+        data.items[index] = { ...item, updated_at: new Date().toISOString() };
+      } else {
+        // New product
+        if (!item.batches) {
+          item.batches = [{
+            id: `batch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            quantity: item.quantity ?? 1,
+            expiration_date: item.expiration_date,
+            added_date: new Date().toISOString(),
+            notes: item.notes
+          }];
+        }
+        data.items.push({ ...item, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+      }
     }
+
     this.saveData(data);
     this.refreshNotifications();
-    return item;
+    
+    // Return the product that was actually saved/merged
+    const finalName = item.name.trim().toLowerCase();
+    return data.items.find(i => i.name.trim().toLowerCase() === finalName) || item;
+  },
+
+  updateProduct(productId: string, updates: Partial<Item>) {
+    const data = this.getData();
+    const productIndex = data.items.findIndex(i => i.id === productId);
+    if (productIndex > -1) {
+      data.items[productIndex] = { ...data.items[productIndex], ...updates, updated_at: new Date().toISOString() };
+      
+      // Reactive logic for consumables: update next_action_date if last_replaced_date changes
+      if (data.items[productIndex].lifecycle_type === 'consumable' && updates.last_replaced_date && data.items[productIndex].lifecycle_interval_days) {
+        const lastReplaced = new Date(updates.last_replaced_date);
+        const nextAction = new Date(lastReplaced);
+        nextAction.setDate(nextAction.getDate() + data.items[productIndex].lifecycle_interval_days!);
+        data.items[productIndex].next_action_date = nextAction.toISOString();
+      }
+
+      this.saveData(data);
+      this.refreshNotifications();
+      return data.items[productIndex];
+    }
+    return null;
+  },
+
+  updateBatch(productId: string, batchId: string, updates: Partial<Batch>) {
+    const data = this.getData();
+    const product = data.items.find(i => i.id === productId);
+    if (product && product.batches) {
+      const batchIndex = product.batches.findIndex(b => b.id === batchId);
+      if (batchIndex > -1) {
+        let newBatch = { ...product.batches[batchIndex], ...updates };
+        
+        product.batches[batchIndex] = newBatch;
+        product.updated_at = new Date().toISOString();
+        this.saveData(data);
+        this.refreshNotifications();
+        return product;
+      }
+    }
+    return null;
+  },
+
+  deleteBatch(productId: string, batchId: string) {
+    const data = this.getData();
+    const product = data.items.find(i => i.id === productId);
+    if (product && product.batches) {
+      product.batches = product.batches.filter(b => b.id !== batchId);
+      
+      // Removed: If no batches left, delete the product
+      
+      product.updated_at = new Date().toISOString();
+      this.saveData(data);
+      this.refreshNotifications();
+      return product;
+    }
+    return null;
   },
 
   deleteItem(id: string) {
@@ -103,6 +296,32 @@ export const storageService = {
 
     const today = new Date();
     item.last_action_date = today.toISOString().split('T')[0];
+    
+    // If consumable, update last_replaced_date
+    if (item.lifecycle_type === 'consumable') {
+      item.last_replaced_date = today.toISOString().split('T')[0];
+    }
+    
+    // Decrement quantity from the soonest expiring batch
+    if ((item.lifecycle_type === 'consumable' || item.lifecycle_type === 'perishable') && item.batches) {
+      // Sort batches to find the one to decrement
+      const sortedBatches = [...item.batches].sort((a, b) => {
+        if (!a.expiration_date) return 1;
+        if (!b.expiration_date) return -1;
+        return new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime();
+      });
+
+      const batchToUpdate = sortedBatches.find(b => b.quantity > 0);
+      if (batchToUpdate) {
+        const realBatchIndex = item.batches.findIndex(b => b.id === batchToUpdate.id);
+        if (realBatchIndex > -1) {
+          item.batches[realBatchIndex].quantity -= 1;
+          if (item.batches[realBatchIndex].quantity <= 0) {
+            item.batches.splice(realBatchIndex, 1);
+          }
+        }
+      }
+    }
     
     if (item.lifecycle_type !== 'perishable' && item.lifecycle_interval_days) {
       const nextDate = new Date(today);
@@ -138,7 +357,7 @@ export const storageService = {
 
     items.forEach(item => {
       // Threshold Alert (Consumables)
-      if (item.lifecycle_type === 'consumable' && item.quantity <= (item.alert_threshold || 0)) {
+      if (item.lifecycle_type === 'consumable' && (item.total_quantity || 0) <= (item.alert_threshold || 0)) {
         const existing = data.notifications.find(n => n.item_id === item.id && n.type === 'low_stock' && !n.is_read);
         if (!existing) {
           newNotifications.push({
@@ -146,10 +365,33 @@ export const storageService = {
             item_id: item.id,
             type: 'low_stock',
             title: 'Low Stock Alert',
-            message: `${item.name} is running low (${item.quantity} left).`,
+            message: `${item.name} Low Stock: Left ${item.total_quantity || 0} | Threshold: ${item.alert_threshold || 0}`,
             is_read: 0,
             created_at: new Date().toISOString()
           });
+        }
+      }
+
+      // Replacement Alert (Consumables)
+      if (item.lifecycle_type === 'consumable' && item.last_replaced_date && item.lifecycle_interval_days) {
+        const lastReplaced = new Date(item.last_replaced_date);
+        const nextAction = new Date(lastReplaced);
+        nextAction.setDate(nextAction.getDate() + item.lifecycle_interval_days);
+        
+        if (nextAction < today) {
+          const existing = data.notifications.find(n => n.item_id === item.id && n.type === 'action_overdue' && !n.is_read);
+          if (!existing) {
+            const diffDays = Math.ceil((today.getTime() - nextAction.getTime()) / (1000 * 60 * 60 * 24));
+            newNotifications.push({
+              id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              item_id: item.id,
+              type: 'action_overdue',
+              title: 'Time to Replace',
+              message: `${item.name} Time to Replace: ${nextAction.toISOString().split('T')[0]} | Overdue ${diffDays} day${diffDays === 1 ? '' : 's'}`,
+              is_read: 0,
+              created_at: new Date().toISOString()
+            });
+          }
         }
       }
 
@@ -160,12 +402,14 @@ export const storageService = {
         if (diffDays <= (item.alert_threshold || 5)) {
           const existing = data.notifications.find(n => n.item_id === item.id && n.type === 'threshold_alert' && !n.is_read);
           if (!existing) {
+            const status = diffDays < 0 ? 'Expired' : 'Expiring';
+            const daysText = diffDays < 0 ? `Overdue ${Math.abs(diffDays)} day${Math.abs(diffDays) === 1 ? '' : 's'}` : `${diffDays} day${diffDays === 1 ? '' : 's'} left`;
             newNotifications.push({
               id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
               item_id: item.id,
               type: 'threshold_alert',
               title: 'Expiring Soon',
-              message: `${item.name} will expire in ${diffDays} days.`,
+              message: `${item.name} ${status}: ${item.expiration_date} | ${daysText}`,
               is_read: 0,
               created_at: new Date().toISOString()
             });
@@ -179,12 +423,13 @@ export const storageService = {
         if (nextDate < today) {
           const existing = data.notifications.find(n => n.item_id === item.id && n.type === 'action_overdue' && !n.is_read);
           if (!existing) {
+            const diffDays = Math.ceil((today.getTime() - nextDate.getTime()) / (1000 * 60 * 60 * 24));
             newNotifications.push({
               id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
               item_id: item.id,
               type: 'action_overdue',
               title: 'Maintenance Overdue',
-              message: `${item.name} requires maintenance.`,
+              message: `${item.name} Overdue: ${item.next_action_date} | Overdue ${diffDays} day${diffDays === 1 ? '' : 's'}`,
               is_read: 0,
               created_at: new Date().toISOString()
             });

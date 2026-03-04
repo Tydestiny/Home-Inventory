@@ -51,7 +51,7 @@ export function SmartNumberInput({ value, onChange, min = 0, className = '', uni
         disabled={disabled}
         onChange={handleChange}
         onFocus={handleFocus}
-        className={`w-full pl-3 ${unitLabel ? 'pr-10' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${otherClasses}`}
+        className={`w-full box-border pl-3 ${unitLabel ? 'pr-10' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${otherClasses}`}
       />
       {unitLabel && (
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-medium pointer-events-none">
@@ -99,7 +99,7 @@ export function SmartNumberInputWithSpinners({ value, onChange, min = 0, classNa
         disabled={disabled}
         onChange={handleChange}
         onFocus={handleFocus}
-        className={`w-full h-full pl-3 ${unitLabel ? 'pr-14' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all ${otherClasses}`}
+        className={`w-full h-full box-border pl-3 ${unitLabel ? 'pr-14' : 'pr-3'} py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all ${otherClasses}`}
       />
       {unitLabel && (
         <span className="absolute right-8 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-medium pointer-events-none z-10">
@@ -131,14 +131,14 @@ export function SmartNotesInput({ value, onChange, placeholder, className = '' }
 
   return (
     <>
-      <div className="relative group">
+      <div className="relative group w-full h-full">
         <input
           type="text"
           value={value}
           readOnly
           onClick={() => setIsExpanded(true)}
           placeholder={placeholder}
-          className={`w-full px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer bg-white ${className}`}
+          className={`w-full h-full box-border px-3 py-2 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer bg-white ${className}`}
         />
         <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
           {value && (

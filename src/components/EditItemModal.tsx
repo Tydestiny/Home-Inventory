@@ -5,6 +5,7 @@ import { Item, Category, Location, LifecycleType } from '../types';
 import { Language, Currency } from '../i18n';
 import { useTranslation } from 'react-i18next';
 import { SmartNumberInputWithSpinners, SmartNotesInput } from './FormControls';
+import { calculateSmartThreshold } from '../services/storage';
 
 interface EditItemModalProps {
   item: Item;
@@ -34,6 +35,17 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
   });
   const [saving, setSaving] = useState(false);
   const [cachedInterval, setCachedInterval] = useState(item.lifecycle_interval_days || 0);
+  const [isThresholdManuallySet, setIsThresholdManuallySet] = useState(false);
+  const [hasExpiryDate, setHasExpiryDate] = useState(!!item.expiration_date);
+  const [cachedExpiryDate, setCachedExpiryDate] = useState(item.expiration_date || '');
+
+  // Auto-calculate threshold when expiration date changes
+  React.useEffect(() => {
+    if (!isThresholdManuallySet && formData.lifecycle_type === 'perishable' && formData.expiration_date) {
+      const newThreshold = calculateSmartThreshold(formData.expiration_date);
+      setFormData(prev => ({ ...prev, alert_threshold: newThreshold }));
+    }
+  }, [formData.expiration_date, formData.lifecycle_type, isThresholdManuallySet]);
 
   // Update formData when permanent toggle changes
   React.useEffect(() => {
@@ -68,14 +80,6 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
 
   const content = (
     <>
-      <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center shrink-0">
-        <h2 className="font-semibold text-lg">{t('editItem')}</h2>
-        {!isEmbedded && (
-          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600">
-            <X className="w-5 h-5" />
-          </button>
-        )}
-      </div>
       <form onSubmit={handleSubmit} className="p-6 sm:px-8 space-y-4 overflow-y-auto flex-1">
         <div>
           <label className="block text-sm font-medium text-zinc-700 mb-1">{t('name')} *</label>
@@ -141,100 +145,255 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
           </div>
         </div>
 
-          {/* Top Row: Date (60%) + Alert Days (40%) */}
-          <div className="flex gap-3 items-start">
-            {/* 左侧：日期框占 60% */}
-            <div className="w-[60%] shrink-0">
-              <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
-                {formData.lifecycle_type === 'perishable' ? t('expDate') : 
-                 formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
-              </label>
-              <input 
-                type="date" 
-                required={formData.lifecycle_type !== 'perishable'}
-                value={formData.lifecycle_type === 'perishable' ? formData.expiration_date : formData.last_action_date}
-                onChange={e => {
-                  if (formData.lifecycle_type === 'perishable') {
-                    setFormData({...formData, expiration_date: e.target.value});
-                  } else {
-                    setFormData({...formData, last_action_date: e.target.value});
-                  }
-                }}
-                // 这里的 h-[42px] 强制高度与右侧 SmartNumberInput 保持物理一致
-                className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
-              />
-            </div>
-
-            {/* 右侧：预警天数占 40% */}
-            <div className="w-[40%] shrink-0">
-              <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
-                {formData.lifecycle_type === 'perishable' 
-                  ? t('alertWhenDaysLess') 
-                  : formData.lifecycle_type === 'maintenance' 
-                    ? t('alertBeforeMaintenance') 
-                    : t('alertWhenBelow')}
-              </label>
-              <div className="flex items-center gap-1.5 h-[42px]">
-                <div className="flex-1 min-w-0 h-full">
-                  <SmartNumberInputWithSpinners
-                    value={formData.alert_threshold}
-                    onChange={val => setFormData({...formData, alert_threshold: val})}
-                    // 确保内部输入框高度充满 42px
-                    className="w-full h-full"
+          {/* Dynamic Rows based on Lifecycle Type */}
+          {formData.lifecycle_type === 'consumable' ? (
+            <>
+              {/* Consumable Row 1: First Use Date (60%) + Usage Cycle (40%) */}
+              <div className="flex gap-3 items-start mb-4">
+                <div className="w-3/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('firstUsed')}</label>
+                  <input 
+                    type="date" 
+                    required
+                    value={formData.last_action_date}
+                    onChange={e => setFormData({...formData, last_action_date: e.target.value})}
+                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
                   />
                 </div>
-                {/* 单位文字：确保不折行，位置微调 */}
-                <span className="text-xs text-zinc-500 shrink-0 whitespace-nowrap">
-                  {formData.lifecycle_type === 'consumable' ? t('thresholdItems') : t('thresholdDays')}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {formData.lifecycle_type === 'perishable' ? (
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">{t('quantity')}</label>
-                <SmartNumberInputWithSpinners
-                  value={formData.quantity}
-                  onChange={val => setFormData({...formData, quantity: val})}
-                />
-              </div>
-            ) : (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-sm font-medium text-zinc-700">{t('intervalDays')}</label>
-                  <div className="flex items-center gap-1.5">
+                <div className="w-2/5 shrink-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-medium text-zinc-700 truncate">{t('intervalDays')}</label>
                     <input 
                       type="checkbox"
-                      id="permanentUseEdit"
                       checked={formData.is_permanent}
                       onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
                       className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
                     />
-                    <label htmlFor="permanentUseEdit" className="text-xs text-zinc-500 select-none">
-                      {t('permanentUse')}
-                    </label>
+                  </div>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        min={0}
+                        disabled={formData.is_permanent}
+                        value={formData.lifecycle_interval_days}
+                        onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
+                        className="w-full h-full disabled:bg-zinc-100 disabled:text-zinc-400"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('days')}</span>
                   </div>
                 </div>
-                <SmartNumberInputWithSpinners
-                  min={0}
-                  disabled={formData.is_permanent}
-                  value={formData.lifecycle_interval_days}
-                  onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
-                  className="disabled:bg-zinc-100 disabled:text-zinc-400"
-                />
               </div>
-            )}
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">{t('notes')}</label>
-              <SmartNotesInput
-                value={formData.notes}
-                onChange={val => setFormData({...formData, notes: val})}
-                placeholder={t('notesPlaceholder')}
-              />
-            </div>
-          </div>
+
+              {/* Consumable Row 2: Expiry Date (60%) + Quantity (40%) */}
+              <div className="flex gap-3 items-start mb-4">
+                <div className="w-3/5 shrink-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-medium text-zinc-700 truncate">{t('expDate')}</label>
+                    <input 
+                      type="checkbox"
+                      checked={!hasExpiryDate}
+                      onChange={e => {
+                        const noExpiry = e.target.checked;
+                        setHasExpiryDate(!noExpiry);
+                        if (noExpiry) {
+                          setCachedExpiryDate(formData.expiration_date);
+                          setFormData({...formData, expiration_date: ''});
+                        } else {
+                          setFormData({...formData, expiration_date: cachedExpiryDate});
+                        }
+                      }}
+                      className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <input 
+                    type="date" 
+                    disabled={!hasExpiryDate}
+                    value={formData.expiration_date}
+                    onChange={e => setFormData({...formData, expiration_date: e.target.value})}
+                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+                  />
+                </div>
+                <div className="w-2/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('quantity')}</label>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        value={formData.quantity}
+                        onChange={val => setFormData({...formData, quantity: val})}
+                        className="w-full h-full"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdItems')}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Consumable Row 3: Alert Threshold (40%) + Notes (60%) */}
+              <div className="flex gap-3 items-start mb-4">
+                <div className="w-2/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('alertWhenBelow')}</label>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        value={formData.alert_threshold}
+                        onChange={val => {
+                          setIsThresholdManuallySet(true);
+                          setFormData({...formData, alert_threshold: val});
+                        }}
+                        className="w-full h-full"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdItems')}</span>
+                  </div>
+                </div>
+                <div className="w-3/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('notes')}</label>
+                  <div className="h-[42px]">
+                    <SmartNotesInput
+                      value={formData.notes}
+                      onChange={val => setFormData({...formData, notes: val})}
+                      placeholder={t('notesPlaceholder')}
+                      className="w-full h-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Row 3: Date (60%) + Quantity/Interval (40%) */}
+              <div className="flex gap-3 items-start mb-4">
+                {/* Left: Date (60%) */}
+                <div className="w-3/5 shrink-0">
+                  {formData.lifecycle_type === 'perishable' ? (
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-sm font-medium text-zinc-700 truncate">{t('expDate')}</label>
+                      <input 
+                        type="checkbox"
+                        checked={!hasExpiryDate}
+                        onChange={e => {
+                          const noExpiry = e.target.checked;
+                          setHasExpiryDate(!noExpiry);
+                          if (noExpiry) {
+                            setCachedExpiryDate(formData.expiration_date);
+                            setFormData({...formData, expiration_date: ''});
+                          } else {
+                            setFormData({...formData, expiration_date: cachedExpiryDate});
+                          }
+                        }}
+                        className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
+                      />
+                    </div>
+                  ) : (
+                    <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
+                      {t('lastMaintained')}
+                    </label>
+                  )}
+                  <input 
+                    type="date" 
+                    required={formData.lifecycle_type !== 'perishable'}
+                    disabled={formData.lifecycle_type === 'perishable' && !hasExpiryDate}
+                    value={formData.lifecycle_type === 'perishable' ? formData.expiration_date : formData.last_action_date}
+                    onChange={e => {
+                      if (formData.lifecycle_type === 'perishable') {
+                        setFormData({...formData, expiration_date: e.target.value});
+                      } else {
+                        setFormData({...formData, last_action_date: e.target.value});
+                      }
+                    }}
+                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+                  />
+                </div>
+
+                {/* Right: Quantity/Interval (40%) */}
+                <div className="w-2/5 shrink-0">
+                  {formData.lifecycle_type === 'perishable' ? (
+                    <>
+                      <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('quantity')}</label>
+                      <div className="flex items-center gap-2 h-[42px]">
+                        <div className="flex-1 min-w-0 h-full">
+                          <SmartNumberInputWithSpinners
+                            value={formData.quantity}
+                            onChange={val => setFormData({...formData, quantity: val})}
+                            className="w-full h-full"
+                          />
+                        </div>
+                        <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdItems')}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm font-medium text-zinc-700 truncate">{t('intervalDays')}</label>
+                        <div className="flex items-center gap-1">
+                           <input 
+                              type="checkbox"
+                              id="permanentUseEdit"
+                              checked={formData.is_permanent}
+                              onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
+                              className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
+                            />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 h-[42px]">
+                        <div className="flex-1 min-w-0 h-full">
+                          <SmartNumberInputWithSpinners
+                            min={0}
+                            disabled={formData.is_permanent}
+                            value={formData.lifecycle_interval_days}
+                            onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
+                            className="w-full h-full disabled:bg-zinc-100 disabled:text-zinc-400"
+                          />
+                        </div>
+                        <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdDays')}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 4: Alert Threshold (40%) + Notes (60%) */}
+              <div className="flex gap-3 items-start">
+                {/* Left: Alert Threshold (40%) */}
+                <div className="w-2/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
+                    {formData.lifecycle_type === 'perishable' 
+                      ? t('alertWhenDaysLess') 
+                      : t('alertBeforeMaintenance')}
+                  </label>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        value={formData.alert_threshold}
+                        onChange={val => {
+                          setIsThresholdManuallySet(true);
+                          setFormData({...formData, alert_threshold: val});
+                        }}
+                        className="w-full h-full"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">
+                      {t('thresholdDays')}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Right: Notes (60%) */}
+                <div className="w-3/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('notes')}</label>
+                  <div className="h-[42px]">
+                    <SmartNotesInput
+                      value={formData.notes}
+                      onChange={val => setFormData({...formData, notes: val})}
+                      placeholder={t('notesPlaceholder')}
+                      className="w-full h-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
       </form>
       <div className="px-6 py-4 border-t border-zinc-100 bg-zinc-50 flex justify-end gap-3 shrink-0">
         <button 

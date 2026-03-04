@@ -4,23 +4,24 @@ import {
   Package, AlertTriangle, CheckCircle, Clock, 
   Plus, Search, Filter, MoreVertical, ShoppingCart,
   Camera, Trash2, Bell, RefreshCw, Download, Settings,
-  ExternalLink, Copy, Maximize2
+  ExternalLink, Copy, Maximize2, X
 } from 'lucide-react';
-import { Item, Category, Location, SmartPreset, LifecycleType, Notification as AppNotification } from './types';
+import { Item, Batch, Category, Location, SmartPreset, LifecycleType, Notification as AppNotification } from './types';
 import { SmartScanModal } from './components/SmartScanModal';
 import { EditItemModal } from './components/EditItemModal';
 import { SettingsModal } from './components/SettingsModal';
+import { ProductCard } from './components/ProductCard';
+import { NotificationList, Alert } from './components/NotificationList';
 import { SmartNumberInputWithSpinners, SmartNotesInput } from './components/FormControls';
 import { Language, Currency, formatCurrency } from './i18n';
 import { useTranslation } from 'react-i18next';
-import { storageService } from './services/storage';
+import { storageService, calculateSmartThreshold } from './services/storage';
 
 function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [presets, setPresets] = useState<SmartPreset[]>([]);
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
@@ -36,6 +37,8 @@ function App() {
   const [lang, setLang] = useState<Language>('en');
   const [currency, setCurrency] = useState<Currency>('USD');
   const [confirmActionItem, setConfirmActionItem] = useState<Item | null>(null);
+  const [batchToDeleteConfirm, setBatchToDeleteConfirm] = useState<{ productId: string; batchId: string; batchIndex: number; itemName: string } | null>(null);
+  const [dismissedAlerts, setDismissedAlerts] = useState<Record<string, { timestamp: number, statusKey: string }>>({});
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
@@ -48,26 +51,7 @@ function App() {
   useEffect(() => {
     fetchData();
     fetchSettings();
-    fetchNotifications();
   }, []);
-
-  const fetchNotifications = async () => {
-    try {
-      const data = storageService.getNotifications();
-      setNotifications(data);
-    } catch (error) {
-      console.error('Error fetching notifications:', error);
-    }
-  };
-
-  const markNotificationRead = async (id: string) => {
-    try {
-      storageService.markNotificationRead(id);
-      setNotifications(notifications.map(n => n.id === id ? { ...n, is_read: 1 } : n));
-    } catch (error) {
-      console.error('Error marking notification as read:', error);
-    }
-  };
 
   const fetchSettings = async () => {
     try {
@@ -82,10 +66,11 @@ function App() {
   const fetchData = async () => {
     try {
       setLoading(true);
+      const items = storageService.getItems();
       const data = storageService.getData();
       
       // Map category and location names to items for easier rendering
-      const enrichedItems = data.items.map(item => ({
+      const enrichedItems = items.map(item => ({
         ...item,
         category_name: data.categories.find(c => c.id === item.category_id)?.name || 'Unknown',
         location_name: data.locations.find(l => l.id === item.location_id)?.name || 'Unknown'
@@ -106,7 +91,7 @@ function App() {
     if (!itemToDelete) return;
     try {
       storageService.deleteItem(itemToDelete);
-      setItems(items.filter(item => item.id !== itemToDelete));
+      fetchData();
     } catch (error) {
       console.error('Error deleting item:', error);
     } finally {
@@ -118,13 +103,66 @@ function App() {
     try {
       const item = items.find(i => i.id === id);
       if (item) {
-        const updatedItem = { ...item, quantity: newQuantity };
-        storageService.saveItem(updatedItem);
-        // No need to enrich here as it's already enriched in state
-        setItems(items.map(i => i.id === id ? updatedItem : i));
+        // If it's a grouped product, update the first batch as a fallback
+        if (item.batches && item.batches.length > 0) {
+          storageService.updateBatch(id, item.batches[0].id, { quantity: newQuantity });
+        } else {
+          storageService.saveItem({ ...item, quantity: newQuantity });
+        }
+        fetchData();
       }
     } catch (error) {
       console.error('Error updating quantity:', error);
+    }
+  };
+
+  const updateProduct = async (productId: string, updates: Partial<Item>) => {
+    try {
+      const updatedProduct = storageService.updateProduct(productId, updates);
+      if (updatedProduct) {
+        fetchData();
+      }
+    } catch (error) {
+      console.error('Error updating product:', error);
+    }
+  };
+
+  const updateBatch = async (productId: string, batchId: string, updates: Partial<Batch>) => {
+    try {
+      if (updates.quantity === 0) {
+        const product = items.find(i => i.id === productId);
+        if (product && product.batches) {
+          const batchIndex = product.batches.findIndex(b => b.id === batchId);
+          if (batchIndex > -1) {
+            setBatchToDeleteConfirm({
+              productId,
+              batchId,
+              batchIndex: batchIndex + 1,
+              itemName: product.name
+            });
+            return;
+          }
+        }
+      }
+
+      const updatedProduct = storageService.updateBatch(productId, batchId, updates);
+      if (updatedProduct) {
+        // Re-fetch or locally update to ensure computed fields are fresh
+        fetchData();
+      }
+    } catch (error) {
+      console.error('Error updating batch:', error);
+    }
+  };
+
+  const deleteBatch = async (productId: string, batchId: string) => {
+    try {
+      const updatedProduct = storageService.deleteBatch(productId, batchId);
+      if (updatedProduct) {
+        fetchData();
+      }
+    } catch (error) {
+      console.error('Error deleting batch:', error);
     }
   };
 
@@ -134,20 +172,76 @@ function App() {
     location_name: locations.find(l => l.id === item.location_id)?.name || 'Unknown'
   });
 
-  const performAction = async (id: string) => {
+  const handleConfirmReplacement = async (id: string) => {
     try {
       const updatedItem = storageService.performAction(id);
       if (updatedItem) {
-        setItems(items.map(item => item.id === id ? enrichItem(updatedItem) : item));
-        setToastMessage(t('actionSuccess'));
-        setShowToast(true);
-        setTimeout(() => setShowToast(false), 3000);
-        fetchNotifications();
+        fetchData();
+        
+        // Clear any alerts for this item since we just took action
+        const alertsToDismiss = computedAlerts.filter(a => a.item_id === id);
+        const updates: Record<string, { timestamp: number, statusKey: string }> = {};
+        alertsToDismiss.forEach(a => {
+          updates[a.id] = { timestamp: Date.now(), statusKey: a.statusKey };
+        });
+        setDismissedAlerts(prev => ({ ...prev, ...updates }));
+
+        if (updatedItem.lifecycle_type === 'perishable' && (updatedItem.total_quantity || 0) > 0) {
+          setSelectedItem(updatedItem);
+          setToastMessage(t('updateNextUnitPrompt'));
+          setShowToast(true);
+          setTimeout(() => setShowToast(false), 4000);
+        } else {
+          setToastMessage(t('actionSuccess'));
+          setShowToast(true);
+          setTimeout(() => setShowToast(false), 3000);
+        }
+      } else {
+        // If updatedItem is null, it means the item was deleted (FIFO quantity reached 0)
+        fetchData();
       }
     } catch (error) {
       console.error('Error performing action:', error);
     } finally {
       setConfirmActionItem(null);
+    }
+  };
+
+  const handleDismissAlert = (alertId: string) => {
+    const alert = computedAlerts.find(a => a.id === alertId);
+    if (alert) {
+      setDismissedAlerts(prev => ({
+        ...prev,
+        [alertId]: { timestamp: Date.now(), statusKey: alert.statusKey }
+      }));
+    }
+  };
+
+  const handleAddBatch = async (productId: string, batch: Partial<Batch>) => {
+    try {
+      const product = items.find(i => i.id === productId);
+      if (product) {
+        const newBatch: Batch = {
+          id: `batch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          quantity: batch.quantity || 1,
+          added_date: batch.added_date || new Date().toISOString(),
+          expiration_date: batch.expiration_date,
+          notes: batch.notes
+        };
+        
+        const updatedProduct = {
+          ...product,
+          batches: [...(product.batches || []), newBatch]
+        };
+        
+        storageService.saveItem(updatedProduct);
+        fetchData();
+        setToastMessage(t('batchAdded'));
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 3000);
+      }
+    } catch (error) {
+      console.error('Error adding batch:', error);
     }
   };
 
@@ -157,14 +251,13 @@ function App() {
 
   const addMultipleItems = async (itemsToAdd: any[]) => {
     try {
-      const savedItems = itemsToAdd.map(item => storageService.saveItem({
+      itemsToAdd.forEach(item => storageService.saveItem({
         ...item,
         id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         household_id: 'household-1'
       }));
-      setItems([...items, ...savedItems.map(enrichItem)]);
+      fetchData();
       setShowScanModal(false);
-      fetchNotifications();
     } catch (error) {
       console.error('Error adding multiple items:', error);
       throw error;
@@ -196,14 +289,13 @@ function App() {
 
   const addItem = async (newItem: any) => {
     try {
-      const item = storageService.saveItem({
+      storageService.saveItem({
         ...newItem,
         id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         household_id: 'household-1'
       });
-      setItems([...items, enrichItem(item)]);
+      fetchData();
       setShowAddModal(false);
-      fetchNotifications();
     } catch (error) {
       console.error('Error adding item:', error);
     }
@@ -212,9 +304,8 @@ function App() {
   const updateItem = async (updatedItem: Item) => {
     try {
       storageService.saveItem(updatedItem);
-      setItems(items.map(i => i.id === updatedItem.id ? enrichItem(updatedItem) : i));
+      fetchData();
       setSelectedItem(null);
-      fetchNotifications();
     } catch (error) {
       console.error('Error updating item:', error);
     }
@@ -239,110 +330,8 @@ function App() {
   const getItemStatus = (item: Item) => {
     const now = new Date();
     
-    // 1. Maintenance Logic
-    if (item.lifecycle_type === 'maintenance') {
-      if (!item.lifecycle_interval_days || item.lifecycle_interval_days === 0) {
-        return {
-          label: t('permanent'),
-          color: 'bg-zinc-100 text-zinc-600 border-zinc-200',
-          actionType: 'none',
-          isButton: false,
-          statusKey: 'permanent'
-        };
-      }
-
-      const lastMaintenance = item.last_action_date ? new Date(item.last_action_date) : null;
-      if (!lastMaintenance) {
-         return {
-          label: t('overdue'),
-          color: 'bg-red-100 text-red-700 border-red-200',
-          actionType: 'maintenance',
-          isButton: true,
-          statusKey: 'action-overdue'
-        };
-      }
-
-      const nextMaintenance = new Date(lastMaintenance);
-      nextMaintenance.setDate(nextMaintenance.getDate() + item.lifecycle_interval_days);
-      
-      const daysUntilAction = Math.ceil((nextMaintenance.getTime() - now.getTime()) / (1000 * 3600 * 24));
-      const warningThreshold = Math.max(7, Math.floor(item.lifecycle_interval_days * 0.1));
-
-      if (daysUntilAction < 0) {
-        return {
-          label: t('overdue'),
-          color: 'bg-red-100 text-red-700 border-red-200',
-          actionType: 'maintenance',
-          isButton: true,
-          statusKey: 'action-overdue'
-        };
-      } else if (daysUntilAction <= warningThreshold) {
-        return {
-          label: t('dueSoon'),
-          color: 'bg-orange-100 text-orange-700 border-orange-200',
-          actionType: 'maintenance',
-          isButton: true,
-          statusKey: 'action-soon'
-        };
-      } else {
-        return {
-          label: t('healthy'),
-          color: 'bg-blue-100 text-blue-700 border-blue-200',
-          actionType: 'none',
-          isButton: false,
-          statusKey: 'good'
-        };
-      }
-    }
-
-    // 2. Perishable Logic
-    if (item.lifecycle_type === 'perishable') {
-      const expirationDate = item.expiration_date ? new Date(item.expiration_date) : null;
-      if (!expirationDate) {
-        return {
-          label: t('fresh'),
-          color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-          actionType: 'none',
-          isButton: false,
-          statusKey: 'good'
-        };
-      }
-      const daysUntilExp = Math.ceil((expirationDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
-      const threshold = item.alert_threshold ?? 5;
-
-      if (daysUntilExp < 0) {
-        return {
-          label: t('expired'),
-          color: 'bg-red-100 text-red-700 border-red-200',
-          actionType: 'replace',
-          isButton: true,
-          statusKey: 'action-overdue'
-        };
-      } else if (daysUntilExp <= threshold) {
-        return {
-          label: t('expiringSoon'),
-          color: 'bg-amber-100 text-amber-700 border-amber-200',
-          actionType: 'replace',
-          isButton: true,
-          statusKey: 'action-soon'
-        };
-      } else {
-        return {
-          label: t('fresh'),
-          color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-          actionType: 'none',
-          isButton: false,
-          statusKey: 'good'
-        };
-      }
-    }
-
-    // 3. Consumable Logic
-    const isOutOfStock = item.quantity === 0;
-    const threshold = item.alert_threshold ?? 2;
-    const isLowStock = item.quantity <= threshold;
-
-    if (isOutOfStock) {
+    // Priority 1: Out of Stock (for all types, if quantity is 0)
+    if (item.quantity === 0) {
       return {
         label: t('outOfStock'),
         color: 'bg-red-100 text-red-700 border-red-200',
@@ -351,19 +340,103 @@ function App() {
         statusKey: 'empty'
       };
     }
-    if (isLowStock) {
+
+    // Priority 2: Maintenance/Replacement Due (Cycle overdue)
+    if (item.lifecycle_type === 'maintenance' || item.lifecycle_type === 'consumable') {
+      if (item.lifecycle_interval_days && item.lifecycle_interval_days > 0) {
+        const lastAction = item.last_action_date ? new Date(item.last_action_date) : null;
+        if (!lastAction) {
+          return {
+            label: item.lifecycle_type === 'maintenance' ? t('overdue') : t('replaceNow'),
+            color: 'bg-red-100 text-red-700 border-red-200',
+            actionType: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'replace',
+            isButton: true,
+            statusKey: 'action-overdue'
+          };
+        }
+
+        const nextAction = new Date(lastAction);
+        nextAction.setDate(nextAction.getDate() + item.lifecycle_interval_days);
+        
+        const daysUntilAction = Math.ceil((nextAction.getTime() - now.getTime()) / (1000 * 3600 * 24));
+        const warningThreshold = Math.max(7, Math.floor(item.lifecycle_interval_days * 0.1));
+
+        if (daysUntilAction < 0) {
+          return {
+            label: item.lifecycle_type === 'maintenance' ? t('overdue') : t('replaceNow'),
+            color: 'bg-red-100 text-red-700 border-red-200',
+            actionType: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'replace',
+            isButton: true,
+            statusKey: 'action-overdue'
+          };
+        } else if (daysUntilAction <= warningThreshold) {
+          return {
+            label: item.lifecycle_type === 'maintenance' ? t('dueSoon') : t('replaceSoon'),
+            color: 'bg-orange-100 text-orange-700 border-orange-200',
+            actionType: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'replace',
+            isButton: true,
+            statusKey: 'action-soon'
+          };
+        }
+      }
+    }
+
+    // Priority 3: Expiring Soon/Expired (Perishables)
+    if (item.lifecycle_type === 'perishable') {
+      const expirationDate = item.expiration_date ? new Date(item.expiration_date) : null;
+      if (expirationDate) {
+        const daysUntilExp = Math.ceil((expirationDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
+        const threshold = item.alert_threshold ?? 5;
+
+        if (daysUntilExp < 0) {
+          return {
+            label: t('expired'),
+            color: 'bg-red-100 text-red-700 border-red-200',
+            actionType: 'expiring',
+            isButton: true,
+            statusKey: 'action-overdue'
+          };
+        } else if (daysUntilExp <= threshold) {
+          return {
+            label: t('expiringSoon'),
+            color: 'bg-amber-100 text-amber-700 border-amber-200',
+            actionType: 'expiring',
+            isButton: true,
+            statusKey: 'action-soon'
+          };
+        }
+      }
+    }
+
+    // Priority 4: Low Stock
+    if (item.lifecycle_type === 'consumable') {
+      const threshold = item.alert_threshold ?? 2;
+      if (item.quantity <= threshold) {
+        return {
+          label: t('lowStock'),
+          color: 'bg-amber-100 text-amber-700 border-amber-200',
+          actionType: 'restock',
+          isButton: true,
+          statusKey: 'low'
+        };
+      }
+    }
+
+    // Default: Good/Healthy
+    if (item.lifecycle_type === 'maintenance' && (!item.lifecycle_interval_days || item.lifecycle_interval_days === 0)) {
       return {
-        label: t('lowStock'),
-        color: 'bg-amber-100 text-amber-700 border-amber-200',
-        actionType: 'restock',
-        isButton: true,
-        statusKey: 'low'
+        label: t('permanent'),
+        color: 'bg-zinc-100 text-zinc-600 border-zinc-200',
+        actionType: 'none',
+        isButton: false,
+        statusKey: 'permanent'
       };
     }
+
     return {
-      label: t('inStock'),
+      label: item.lifecycle_type === 'perishable' ? t('fresh') : (item.lifecycle_type === 'maintenance' ? t('healthy') : t('inStock')),
       color: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-      actionType: 'none',
+      actionType: item.lifecycle_type === 'perishable' ? 'fresh' : 'none',
       isButton: false,
       statusKey: 'good'
     };
@@ -382,7 +455,66 @@ function App() {
     healthy: items.filter(i => getItemStatus(i).statusKey === 'good').length,
   };
 
-  const unreadNotifications = notifications.filter(n => !n.is_read);
+  const computedAlerts = React.useMemo(() => {
+    const alerts: Alert[] = [];
+    const now = new Date();
+    now.setHours(0,0,0,0);
+    
+    items.forEach(item => {
+      const status = getItemStatus(item);
+      
+      if (status.statusKey === 'empty') {
+        alerts.push({
+          id: `alert-empty-${item.id}`,
+          item_id: item.id,
+          type: 'stock',
+          statusKey: 'empty',
+          itemName: item.name,
+          quantity: 0,
+          threshold: item.alert_threshold || 0
+        });
+      } else if (status.statusKey === 'low' || status.statusKey === 'critical-restock') {
+        alerts.push({
+          id: `alert-low-${item.id}`,
+          item_id: item.id,
+          type: 'stock',
+          statusKey: status.statusKey === 'critical-restock' ? 'empty' : 'low',
+          itemName: item.name,
+          quantity: item.quantity,
+          threshold: item.alert_threshold || 0
+        });
+      } else if (status.statusKey === 'action-overdue' || status.statusKey === 'action-soon') {
+        let dateStr = item.next_action_date || item.soonest_expiration_date || '';
+        let diffDays = 0;
+        if (dateStr) {
+          const d = new Date(dateStr);
+          d.setHours(0,0,0,0);
+          diffDays = Math.ceil((d.getTime() - now.getTime()) / (1000 * 3600 * 24));
+        }
+        
+        alerts.push({
+          id: `alert-maint-${item.id}`,
+          item_id: item.id,
+          type: item.lifecycle_type === 'maintenance' ? 'maintenance' : 'expiry',
+          statusKey: status.statusKey,
+          itemName: item.name,
+          dateStr,
+          diffDays,
+          statusLabel: status.label
+        });
+      }
+    });
+    
+    return alerts.filter(a => {
+      const dismissed = dismissedAlerts[a.id];
+      if (!dismissed) return true;
+      const isExpired = (Date.now() - dismissed.timestamp) > 24 * 60 * 60 * 1000;
+      const statusChanged = dismissed.statusKey !== a.statusKey;
+      return isExpired || statusChanged;
+    });
+  }, [items, t, dismissedAlerts]);
+
+  const unreadNotifications = computedAlerts;
 
   const filteredItems = items.filter(item => {
     const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -413,43 +545,21 @@ function App() {
                 )}
               </button>
               {showNotifications && (
-                <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-lg border border-zinc-100 py-2 z-30">
-                  <div className="px-4 py-2 border-b border-zinc-100 flex justify-between items-center">
-                    <h3 className="font-semibold text-sm">{t('smartReminders')}</h3>
-                    <span className="text-xs bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{unreadNotifications.length}</span>
-                  </div>
-                  <div className="max-h-80 overflow-y-auto">
-                    {notifications.length === 0 ? (
-                      <div className="px-4 py-6 text-center text-sm text-zinc-500">{t('noReminders')}</div>
-                    ) : (
-                      notifications.map(n => (
-                        <div 
-                          key={n.id} 
-                          className={`px-4 py-3 hover:bg-zinc-50 border-b border-zinc-50 last:border-0 cursor-pointer ${!n.is_read ? 'bg-emerald-50/30' : ''}`} 
-                          onClick={() => { 
-                            if (n.item_id) {
-                              const item = items.find(i => i.id === n.item_id);
-                              if (item) setSelectedItem(item);
-                            }
-                            markNotificationRead(n.id);
-                            setShowNotifications(false); 
-                          }}
-                        >
-                          <div className="flex justify-between items-start mb-1">
-                            <span className={`font-medium text-sm ${!n.is_read ? 'text-emerald-900' : 'text-zinc-900'}`}>{n.title}</span>
-                            {!n.is_read && <span className="w-2 h-2 bg-emerald-500 rounded-full mt-1.5"></span>}
-                          </div>
-                          <div className="text-xs text-zinc-500 leading-relaxed">
-                            {n.message}
-                          </div>
-                          <div className="text-[10px] text-zinc-400 mt-2">
-                            {new Date(n.created_at).toLocaleString()}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
+                <NotificationList
+                  alerts={computedAlerts}
+                  onItemClick={(itemId) => {
+                    const item = items.find(i => i.id === itemId);
+                    if (item) setSelectedItem(item);
+                  }}
+                  onAction={(alert) => {
+                    handleConfirmReplacement(alert.item_id);
+                    setToastMessage(lang === 'zh' ? '已处理' : 'Handled successfully');
+                    setShowToast(true);
+                    setTimeout(() => setShowToast(false), 3000);
+                  }}
+                  onDismiss={handleDismissAlert}
+                  onClose={() => setShowNotifications(false)}
+                />
               )}
             </div>
             
@@ -591,167 +701,26 @@ function App() {
               <p className="text-zinc-500 text-sm mt-1">{t('tryAdjusting')}</p>
             </div>
           ) : (
-            <>
-              {/* Desktop Table View */}
-              <div className="hidden md:block bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-sm">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm table-fixed">
-                    <thead className="bg-zinc-50 border-b border-zinc-200 text-zinc-500">
-                      <tr>
-                        <th className="px-6 py-3 font-medium w-3/12 text-left">{t('name')}</th>
-                        <th className="px-6 py-3 font-medium w-2/12 text-center">{t('location')}</th>
-                        <th className="px-6 py-3 font-medium w-2/12 text-center">{t('status')}</th>
-                        <th className="px-6 py-3 font-medium w-3/12 text-center">{t('quantityControl')}</th>
-                        <th className="px-6 py-3 font-medium w-2/12 text-center">{t('action')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-100">
-                      {filteredItems.map(item => {
-                        const statusInfo = getItemStatus(item);
-                        return (
-                          <motion.tr 
-                            key={item.id}
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="hover:bg-zinc-50/50 transition-colors group cursor-pointer"
-                            onClick={() => setSelectedItem(item)}
-                          >
-                            <td className="px-6 py-4 align-middle">
-                              <div className="font-medium text-zinc-900 break-words" title={item.name}>{item.name}</div>
-                              <div className="text-zinc-500 text-xs mt-0.5 capitalize">
-                                {t(item.lifecycle_type as any)} • {t(item.category_name as any)}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 text-zinc-600 align-middle text-center">
-                              {t(item.location_name as any)}
-                            </td>
-                            <td className="px-6 py-4 align-middle text-center">
-                              <div className="flex justify-center">
-                                <StatusBadge statusInfo={statusInfo} item={item} lang={lang} onAction={requestAction} />
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 align-middle text-center" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex items-center justify-center">
-                                {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') ? (
-                                  <SmartNumberInputWithSpinners
-                                    value={item.quantity}
-                                    onChange={(val) => updateQuantity(item.id, val)}
-                                    className="font-mono w-20 font-medium bg-zinc-50 border border-zinc-200 rounded py-0.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-center"
-                                  />
-                                ) : (
-                                  <span className="text-zinc-400 text-xs">-</span>
-                                )}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 align-middle text-center" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex items-center justify-center gap-2">
-                                {item.lifecycle_type !== 'perishable' && (
-                                  <button 
-                                    onClick={() => requestAction(item)}
-                                    className="px-3 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-md transition-colors border border-emerald-200 whitespace-nowrap"
-                                  >
-                                    {item.lifecycle_type === 'maintenance' ? t('markDone') : t('replaced')}
-                                  </button>
-                                )}
-                                <button 
-                                  onClick={() => setItemToDelete(item.id)}
-                                  className="p-1.5 text-zinc-400 hover:text-red-600 transition-colors"
-                                  title={t('delete')}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </td>
-                          </motion.tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Mobile Card View */}
-              <div className="md:hidden space-y-4">
-                {filteredItems.map(item => {
-                  const statusInfo = getItemStatus(item);
-                  return (
-                    <motion.div 
-                      key={item.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="bg-white rounded-xl border border-zinc-200 shadow-sm overflow-hidden"
-                      onClick={() => setSelectedItem(item)}
-                    >
-                      {/* Card Header */}
-                      <div className="p-4 border-b border-zinc-100">
-                        <div className="flex justify-between items-start gap-2">
-                          <div>
-                            <h3 className="font-semibold text-zinc-900 text-base break-words">{item.name}</h3>
-                            <p className="text-zinc-500 text-xs mt-1">
-                              {t(item.category_name as any)} • {t(item.location_name as any)}
-                            </p>
-                          </div>
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); setItemToDelete(item.id); }}
-                            className="p-2 text-zinc-400 hover:text-red-600 transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Card Body */}
-                      <div className="p-4 flex items-center justify-between bg-zinc-50/30">
-                        <StatusBadge statusInfo={statusInfo} item={item} lang={lang} onAction={requestAction} />
-                        
-                        <div onClick={(e) => e.stopPropagation()}>
-                          {(item.lifecycle_type === 'perishable' || item.lifecycle_type === 'consumable') ? (
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-zinc-500 font-medium uppercase tracking-wider">{t('quantity')}</span>
-                              <SmartNumberInputWithSpinners
-                                value={item.quantity}
-                                onChange={(val) => updateQuantity(item.id, val)}
-                                className="font-mono w-20 font-medium bg-white border border-zinc-200 rounded py-1 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-center"
-                              />
-                            </div>
-                          ) : (
-                            <span className="text-zinc-400 text-xs italic">{t(item.lifecycle_type as any)}</span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Card Footer / Actions */}
-                      {item.lifecycle_type !== 'perishable' && (
-                        <div className="p-3 border-t border-zinc-100 bg-white" onClick={(e) => e.stopPropagation()}>
-                          <button 
-                            onClick={() => requestAction(item)}
-                            className="w-full py-2.5 text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg shadow-sm shadow-emerald-200 transition-all active:scale-[0.98]"
-                          >
-                            {item.lifecycle_type === 'maintenance' ? t('markDone') : t('replaced')}
-                          </button>
-                        </div>
-                      )}
-                    </motion.div>
-                  );
-                })}
-              </div>
-            </>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredItems.map(item => (
+                <ProductCard 
+                  key={item.id}
+                  item={item}
+                  onUpdateBatch={updateBatch}
+                  onUpdateProduct={updateProduct}
+                  onDeleteBatch={deleteBatch}
+                  onAddBatch={handleAddBatch}
+                  onEditProduct={setSelectedItem}
+                  onDeleteProduct={(item) => setItemToDelete(item.id)}
+                  getItemStatus={getItemStatus}
+                  onAction={requestAction}
+                  lang={lang}
+                />
+              ))}
+            </div>
           )}
         </section>
       </main>
-
-      {/* Add Item Modal */}
-      {showAddModal && (
-        <AddItemModal 
-          categories={categories}
-          locations={locations}
-          presets={presets}
-          lang={lang}
-          currency={currency}
-          onClose={() => setShowAddModal(false)}
-          onAdd={addItem}
-        />
-      )}
 
       {/* Smart Scan Modal */}
       {showScanModal && (
@@ -800,7 +769,22 @@ function App() {
             setShowSettings(false);
             fetchData();
             fetchSettings();
-            fetchNotifications();
+          }}
+        />
+      )}
+
+      {/* Add Item Modal */}
+      {showAddModal && (
+        <AddItemModal 
+          categories={categories}
+          locations={locations}
+          presets={presets}
+          lang={lang}
+          currency={currency}
+          onClose={() => setShowAddModal(false)}
+          onAdd={async (newItem: any) => {
+            await addItem(newItem);
+            setShowAddModal(false);
           }}
         />
       )}
@@ -832,7 +816,7 @@ function App() {
                 {t('cancel')}
               </button>
               <button 
-                onClick={() => performAction(confirmActionItem.id)}
+                onClick={() => handleConfirmReplacement(confirmActionItem.id)}
                 className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors"
               >
                 {t('confirm')}
@@ -882,6 +866,44 @@ function App() {
                 className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
               >
                 {t('delete')}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Batch Delete Confirmation Modal */}
+      {batchToDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden p-6"
+          >
+            <div className="flex items-center gap-3 text-red-600 mb-4">
+              <AlertTriangle className="w-6 h-6" />
+              <h2 className="font-semibold text-lg text-zinc-900">{lang === 'zh' ? '用完批次' : 'Use Up Batch'}</h2>
+            </div>
+            <p className="text-zinc-600 text-sm mb-6">
+              {lang === 'zh' 
+                ? `您确定要用完 ${batchToDeleteConfirm.itemName} 的批次 ${batchToDeleteConfirm.batchIndex} 吗？这将从您的库存中移除该批次。`
+                : `Are you sure you want to use up ${batchToDeleteConfirm.itemName} Batch ${batchToDeleteConfirm.batchIndex}? This will remove this batch from your inventory.`}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button 
+                onClick={() => setBatchToDeleteConfirm(null)}
+                className="h-[42px] px-4 text-sm font-medium text-zinc-600 hover:bg-zinc-50 rounded-lg transition-colors"
+              >
+                {t('cancel')}
+              </button>
+              <button 
+                onClick={() => {
+                  deleteBatch(batchToDeleteConfirm.productId, batchToDeleteConfirm.batchId);
+                  setBatchToDeleteConfirm(null);
+                }}
+                className="h-[42px] px-4 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+              >
+                {lang === 'zh' ? '确认移除' : 'Confirm Remove'}
               </button>
             </div>
           </motion.div>
@@ -970,6 +992,17 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
   });
   const [saving, setSaving] = useState(false);
   const [cachedInterval, setCachedInterval] = useState(0);
+  const [isThresholdManuallySet, setIsThresholdManuallySet] = useState(false);
+  const [hasExpiryDate, setHasExpiryDate] = useState(true);
+  const [cachedExpiryDate, setCachedExpiryDate] = useState('');
+
+  // Auto-calculate threshold when expiration date changes
+  useEffect(() => {
+    if (!isThresholdManuallySet && formData.lifecycle_type === 'perishable' && formData.expiration_date) {
+      const newThreshold = calculateSmartThreshold(formData.expiration_date);
+      setFormData(prev => ({ ...prev, alert_threshold: newThreshold }));
+    }
+  }, [formData.expiration_date, formData.lifecycle_type, isThresholdManuallySet]);
 
   // Update formData when permanent toggle changes
   useEffect(() => {
@@ -1017,12 +1050,14 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden"
+        className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden relative"
       >
-        <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center">
-          <h2 className="font-semibold text-lg">{t('addItem')}</h2>
-          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600">×</button>
-        </div>
+        <button 
+          onClick={onClose} 
+          className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-600 z-10 bg-white/80 backdrop-blur-sm rounded-full p-1"
+        >
+          <X className="w-5 h-5" />
+        </button>
         <form onSubmit={handleSubmit} className="p-6 sm:px-8 space-y-4 max-h-[80vh] overflow-y-auto">
           {presets && presets.length > 0 && (
             <div className="mb-4 p-3 bg-zinc-50 rounded-lg border border-zinc-200">
@@ -1104,100 +1139,255 @@ function AddItemModal({ categories, locations, presets, lang, currency, onClose,
             </div>
           </div>
 
-          {/* Top Row: Date (60%) + Alert Days (40%) */}
-          <div className="flex gap-3 items-start">
-            {/* 左侧：日期框占 60% */}
-            <div className="w-[60%] shrink-0">
-              <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
-                {formData.lifecycle_type === 'perishable' ? t('expDate') : 
-                formData.lifecycle_type === 'consumable' ? t('firstUsed') : t('lastMaintained')}
-              </label>
-              <input 
-                type="date" 
-                required={formData.lifecycle_type !== 'perishable'}
-                value={formData.lifecycle_type === 'perishable' ? formData.expiration_date : formData.last_action_date}
-                onChange={e => {
-                  if (formData.lifecycle_type === 'perishable') {
-                    setFormData({...formData, expiration_date: e.target.value});
-                  } else {
-                    setFormData({...formData, last_action_date: e.target.value});
-                  }
-                }}
-                // 这里的 h-[42px] 强制高度与右侧 SmartNumberInput 保持物理一致
-                className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
-              />
-            </div>
-
-            {/* 右侧：预警天数占 40% */}
-            <div className="w-[40%] shrink-0">
-              <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
-                {formData.lifecycle_type === 'perishable' 
-                  ? t('alertWhenDaysLess') 
-                  : formData.lifecycle_type === 'maintenance' 
-                    ? t('alertBeforeMaintenance') 
-                    : t('alertWhenBelow')}
-              </label>
-              <div className="flex items-center gap-1.5 h-[42px]">
-                <div className="flex-1 min-w-0">
-                  <SmartNumberInputWithSpinners
-                    value={formData.alert_threshold}
-                    onChange={val => setFormData({...formData, alert_threshold: val})}
-                    // 确保内部输入框高度充满 42px
-                    className="w-full h-full"
+          {/* Dynamic Rows based on Lifecycle Type */}
+          {formData.lifecycle_type === 'consumable' ? (
+            <>
+              {/* Consumable Row 1: First Use Date (60%) + Usage Cycle (40%) */}
+              <div className="flex gap-3 items-start mb-4">
+                <div className="w-3/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('firstUsed')}</label>
+                  <input 
+                    type="date" 
+                    required
+                    value={formData.last_action_date}
+                    onChange={e => setFormData({...formData, last_action_date: e.target.value})}
+                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
                   />
                 </div>
-                {/* 单位文字：确保不折行，位置微调 */}
-                <span className="text-xs text-zinc-500 shrink-0 whitespace-nowrap">
-                  {formData.lifecycle_type === 'consumable' ? t('thresholdItems') : t('thresholdDays')}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {formData.lifecycle_type === 'perishable' ? (
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">{t('quantity')}</label>
-                <SmartNumberInputWithSpinners
-                  value={formData.quantity}
-                  onChange={val => setFormData({...formData, quantity: val})}
-                />
-              </div>
-            ) : (
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-sm font-medium text-zinc-700">{t('intervalDays')}</label>
-                  <div className="flex items-center gap-1.5">
+                <div className="w-2/5 shrink-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-medium text-zinc-700 truncate">{t('intervalDays')}</label>
                     <input 
                       type="checkbox"
-                      id="permanentUseAdd"
                       checked={formData.is_permanent}
                       onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
                       className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
                     />
-                    <label htmlFor="permanentUseAdd" className="text-xs text-zinc-500 select-none">
-                      {t('permanentUse')}
-                    </label>
+                  </div>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        min={0}
+                        disabled={formData.is_permanent}
+                        value={formData.lifecycle_interval_days}
+                        onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
+                        className="w-full h-full disabled:bg-zinc-100 disabled:text-zinc-400"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('days')}</span>
                   </div>
                 </div>
-                <SmartNumberInputWithSpinners
-                  min={0}
-                  disabled={formData.is_permanent}
-                  value={formData.lifecycle_interval_days}
-                  onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
-                  className="disabled:bg-zinc-100 disabled:text-zinc-400"
-                />
               </div>
-            )}
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 mb-1">{t('notes')}</label>
-              <SmartNotesInput
-                value={formData.notes}
-                onChange={val => setFormData({...formData, notes: val})}
-                placeholder={t('notesPlaceholder')}
-              />
-            </div>
-          </div>
+
+              {/* Consumable Row 2: Expiry Date (60%) + Quantity (40%) */}
+              <div className="flex gap-3 items-start mb-4">
+                <div className="w-3/5 shrink-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-medium text-zinc-700 truncate">{t('expDate')}</label>
+                    <input 
+                      type="checkbox"
+                      checked={!hasExpiryDate}
+                      onChange={e => {
+                        const noExpiry = e.target.checked;
+                        setHasExpiryDate(!noExpiry);
+                        if (noExpiry) {
+                          setCachedExpiryDate(formData.expiration_date);
+                          setFormData({...formData, expiration_date: ''});
+                        } else {
+                          setFormData({...formData, expiration_date: cachedExpiryDate});
+                        }
+                      }}
+                      className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <input 
+                    type="date" 
+                    disabled={!hasExpiryDate}
+                    value={formData.expiration_date}
+                    onChange={e => setFormData({...formData, expiration_date: e.target.value})}
+                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+                  />
+                </div>
+                <div className="w-2/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('quantity')}</label>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        value={formData.quantity}
+                        onChange={val => setFormData({...formData, quantity: val})}
+                        className="w-full h-full"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdItems')}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Consumable Row 3: Alert Threshold (40%) + Notes (60%) */}
+              <div className="flex gap-3 items-start mb-4">
+                <div className="w-2/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('alertWhenBelow')}</label>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        value={formData.alert_threshold}
+                        onChange={val => {
+                          setIsThresholdManuallySet(true);
+                          setFormData({...formData, alert_threshold: val});
+                        }}
+                        className="w-full h-full"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdItems')}</span>
+                  </div>
+                </div>
+                <div className="w-3/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('notes')}</label>
+                  <div className="h-[42px]">
+                    <SmartNotesInput
+                      value={formData.notes}
+                      onChange={val => setFormData({...formData, notes: val})}
+                      placeholder={t('notesPlaceholder')}
+                      className="w-full h-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Row 3: Date (60%) + Quantity/Interval (40%) */}
+              <div className="flex gap-3 items-start mb-4">
+                {/* Left: Date (60%) */}
+                <div className="w-3/5 shrink-0">
+                  {formData.lifecycle_type === 'perishable' ? (
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-sm font-medium text-zinc-700 truncate">{t('expDate')}</label>
+                      <input 
+                        type="checkbox"
+                        checked={!hasExpiryDate}
+                        onChange={e => {
+                          const noExpiry = e.target.checked;
+                          setHasExpiryDate(!noExpiry);
+                          if (noExpiry) {
+                            setCachedExpiryDate(formData.expiration_date);
+                            setFormData({...formData, expiration_date: ''});
+                          } else {
+                            setFormData({...formData, expiration_date: cachedExpiryDate});
+                          }
+                        }}
+                        className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
+                      />
+                    </div>
+                  ) : (
+                    <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
+                      {t('lastMaintained')}
+                    </label>
+                  )}
+                  <input 
+                    type="date" 
+                    required={formData.lifecycle_type !== 'perishable'}
+                    disabled={formData.lifecycle_type === 'perishable' && !hasExpiryDate}
+                    value={formData.lifecycle_type === 'perishable' ? formData.expiration_date : formData.last_action_date}
+                    onChange={e => {
+                      if (formData.lifecycle_type === 'perishable') {
+                        setFormData({...formData, expiration_date: e.target.value});
+                      } else {
+                        setFormData({...formData, last_action_date: e.target.value});
+                      }
+                    }}
+                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+                  />
+                </div>
+
+                {/* Right: Quantity/Interval (40%) */}
+                <div className="w-2/5 shrink-0">
+                  {formData.lifecycle_type === 'perishable' ? (
+                    <>
+                      <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('quantity')}</label>
+                      <div className="flex items-center gap-2 h-[42px]">
+                        <div className="flex-1 min-w-0 h-full">
+                          <SmartNumberInputWithSpinners
+                            value={formData.quantity}
+                            onChange={val => setFormData({...formData, quantity: val})}
+                            className="w-full h-full"
+                          />
+                        </div>
+                        <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdItems')}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm font-medium text-zinc-700 truncate">{t('intervalDays')}</label>
+                        <div className="flex items-center gap-1">
+                           <input 
+                              type="checkbox"
+                              id="permanentUseAdd"
+                              checked={formData.is_permanent}
+                              onChange={e => setFormData({...formData, is_permanent: e.target.checked})}
+                              className="w-3.5 h-3.5 text-emerald-600 rounded border-zinc-300 focus:ring-emerald-500"
+                            />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 h-[42px]">
+                        <div className="flex-1 min-w-0 h-full">
+                          <SmartNumberInputWithSpinners
+                            min={0}
+                            disabled={formData.is_permanent}
+                            value={formData.lifecycle_interval_days}
+                            onChange={val => setFormData({...formData, lifecycle_interval_days: val})}
+                            className="w-full h-full disabled:bg-zinc-100 disabled:text-zinc-400"
+                          />
+                        </div>
+                        <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{t('thresholdDays')}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 4: Alert Threshold (40%) + Notes (60%) */}
+              <div className="flex gap-3 items-start">
+                {/* Left: Alert Threshold (40%) */}
+                <div className="w-2/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">
+                    {formData.lifecycle_type === 'perishable' 
+                      ? t('alertWhenDaysLess') 
+                      : t('alertBeforeMaintenance')}
+                  </label>
+                  <div className="flex items-center gap-2 h-[42px]">
+                    <div className="flex-1 min-w-0 h-full">
+                      <SmartNumberInputWithSpinners
+                        value={formData.alert_threshold}
+                        onChange={val => {
+                          setIsThresholdManuallySet(true);
+                          setFormData({...formData, alert_threshold: val});
+                        }}
+                        className="w-full h-full"
+                      />
+                    </div>
+                    <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">
+                      {t('thresholdDays')}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Right: Notes (60%) */}
+                <div className="w-3/5 shrink-0">
+                  <label className="block text-sm font-medium text-zinc-700 mb-1 truncate">{t('notes')}</label>
+                  <div className="h-[42px]">
+                    <SmartNotesInput
+                      value={formData.notes}
+                      onChange={val => setFormData({...formData, notes: val})}
+                      placeholder={t('notesPlaceholder')}
+                      className="w-full h-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
 
           <div className="pt-4 flex justify-end gap-3">
             <button 

@@ -1,5 +1,13 @@
 export type LifecycleType = 'perishable' | 'consumable' | 'maintenance';
 
+export interface Batch {
+  id: string;
+  quantity: number;
+  expiration_date?: string;
+  added_date: string;
+  notes?: string;
+}
+
 export interface Item {
   id: string;
   household_id: string;
@@ -8,22 +16,33 @@ export interface Item {
   name: string;
   purpose?: string;
   storage_method?: string;
-  quantity: number;
+  
+  // Legacy fields (kept for backward compatibility during migration)
+  quantity?: number;
+  expiration_date?: string;
+  notes?: string;
   
   // Lifecycle fields
   lifecycle_type: LifecycleType;
   lifecycle_interval_days?: number;
   last_action_date?: string;
   next_action_date?: string;
-  expiration_date?: string; // Legacy/Perishable specific
+  first_use_date?: string;
+  last_replaced_date?: string; // Moved here
   
   restock_frequency_days?: number;
   alert_threshold?: number; // Quantity for consumables, days for perishables
-  notes?: string;
   barcode?: string;
   created_at: string;
   updated_at: string;
   
+  // New Smart Carousel fields
+  batches: Batch[];
+  
+  // Computed fields (for UI)
+  total_quantity?: number;
+  soonest_expiration_date?: string | null;
+
   // Joined fields
   category_name?: string;
   location_name?: string;
