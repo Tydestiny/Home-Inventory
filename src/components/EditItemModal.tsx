@@ -157,7 +157,7 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
                     required
                     value={formData.last_action_date}
                     onChange={e => setFormData({...formData, last_action_date: e.target.value})}
-                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+                    className="w-full h-[42px] px-1 py-2 text-[12px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-0 [&::-webkit-calendar-picker-indicator]:p-0"
                   />
                 </div>
                 <div className="w-2/5 shrink-0">
@@ -211,7 +211,7 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
                     disabled={!hasExpiryDate}
                     value={formData.expiration_date}
                     onChange={e => setFormData({...formData, expiration_date: e.target.value})}
-                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+                    className="w-full h-[42px] px-1 py-2 text-[12px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-0 [&::-webkit-calendar-picker-indicator]:p-0"
                   />
                 </div>
                 <div className="w-2/5 shrink-0">
@@ -302,7 +302,7 @@ export function EditItemModal({ item, categories, locations, lang, currency, onC
                         setFormData({...formData, last_action_date: e.target.value});
                       }
                     }}
-                    className="w-full h-[42px] px-2 py-2 text-[13px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-1 [&::-webkit-calendar-picker-indicator]:p-0"
+                    className="w-full h-[42px] px-1 py-2 text-[12px] sm:text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 disabled:opacity-50 [color-scheme:light] [&::-webkit-calendar-picker-indicator]:ml-0 [&::-webkit-calendar-picker-indicator]:p-0"
                   />
                 </div>
 

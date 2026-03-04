@@ -6,6 +6,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { Category, Location, LifecycleType, SmartPreset } from '../types';
 import { Language } from '../i18n';
 import { useTranslation } from 'react-i18next';
+import { storageService } from '../services/storage';
 
 interface SmartScanModalProps {
   categories: Category[];
@@ -103,72 +104,183 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
   const analyzeImage = async (base64Image: string) => {
     setIsAnalyzing(true);
     setError(null);
+    
     try {
-      // Remove data:image/jpeg;base64, prefix
-      const base64Data = base64Image.split(',')[1];
-      const mimeType = base64Image.split(';')[0].split(':')[1];
-
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
+      const aiConfig = storageService.getAIConfig();
+      const provider = aiConfig.provider;
+      const apiKey = aiConfig.apiKey || import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
       
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: base64Data
+      // Fallback to Gemini if no key provided for other providers, but if user explicitly selected openai/anthropic, we try to use it.
+      // If provider is 'google' and no key in config, we use env var.
+      
+      if (!apiKey && provider !== 'google') {
+        throw new Error(lang === 'zh' ? '请先在设置中配置 AI API 密钥。' : 'Please configure AI API Key in Settings first.');
+      }
+
+      const promptText = `Analyze this image (could be a receipt, pantry shelf, or product). Extract all identifiable household items, groceries, or supplies.
+      IMPORTANT: The 'name' MUST be in ${lang === 'zh' ? 'Chinese' : 'English'} ONLY. DO NOT include bilingual names or translations.
+      
+      Return a JSON ARRAY of objects. Each object must have:
+      - name: Product name in ${lang === 'zh' ? 'Chinese' : 'English'}.
+      - category_id: One of: ${categories.map(c => c.id).join(', ')}.
+      - quantity: Number (default 1).
+      - alert_threshold: Number (default 2).
+      - lifecycle_type: 'perishable', 'consumable', or 'maintenance'.
+      - lifecycle_interval_days: Number (0 for perishable).
+      
+      Example JSON:
+      [{"name": "Apple", "category_id": "cat-1", "quantity": 5, "alert_threshold": 2, "lifecycle_type": "perishable", "lifecycle_interval_days": 0}]
+      `;
+
+      let jsonString = '';
+
+      if (provider === 'google') {
+        // --- Google Gemini Implementation ---
+        const base64Data = base64Image.split(',')[1];
+        const mimeType = base64Image.split(';')[0].split(':')[1];
+        
+        const ai = new GoogleGenAI({ apiKey: apiKey });
+        const response = await ai.models.generateContent({
+          model: aiConfig.model || 'gemini-3-flash-preview',
+          contents: {
+            parts: [
+              { inlineData: { mimeType, data: base64Data } },
+              { text: promptText }
+            ]
+          },
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  category_id: { type: Type.STRING },
+                  quantity: { type: Type.INTEGER },
+                  alert_threshold: { type: Type.INTEGER },
+                  lifecycle_type: { type: Type.STRING },
+                  lifecycle_interval_days: { type: Type.INTEGER }
+                },
+                required: ['name', 'category_id', 'quantity', 'alert_threshold', 'lifecycle_type', 'lifecycle_interval_days']
               }
-            },
-            {
-              text: `Analyze this image (could be a receipt, pantry shelf, or product). Extract all identifiable household items, groceries, or supplies.
-              IMPORTANT: The 'name' MUST be in ${lang === 'zh' ? 'Chinese' : 'English'} ONLY. DO NOT include bilingual names or translations (e.g., use '大米' not '大米 (Rice)').
-              For each item, provide:
-              - name: A clean, concise product name in ${lang === 'zh' ? 'Chinese' : 'English'}.
-              - category_id: Best matching category ID from this list: ${categories.map(c => `${c.id} (${c.name})`).join(', ')}. If unsure, pick the closest one.
-              - quantity: Estimated quantity (default 1).
-              - alert_threshold: Sensible default alert threshold (e.g., 2 for quantity, 5 for days).
-              - lifecycle_type: 'perishable' (food/medicine), 'consumable' (sponges, batteries), or 'maintenance' (tasks).
-              - lifecycle_interval_days: If consumable/maintenance, estimate the replacement/maintenance interval in days (e.g., 14 for sponge, 90 for toothbrush). 0 if perishable.
-              `
-            }
-          ]
-        },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                category_id: { type: Type.STRING },
-                quantity: { type: Type.INTEGER },
-                alert_threshold: { type: Type.INTEGER },
-                lifecycle_type: { type: Type.STRING },
-                lifecycle_interval_days: { type: Type.INTEGER }
-              },
-              required: ['name', 'category_id', 'quantity', 'alert_threshold', 'lifecycle_type', 'lifecycle_interval_days']
             }
           }
-        }
-      });
+        });
+        jsonString = response.text || '[]';
 
-      if (response.text) {
-        const parsed = JSON.parse(response.text);
-        // Add default location and dates to each item
-        const defaultLocation = locations[0]?.id || '';
-        const enrichedItems = parsed.map((item: any) => ({
-          ...item,
-          location_id: defaultLocation,
-          last_action_date: new Date().toISOString().split('T')[0],
-          expiration_date: ''
-        }));
-        setExtractedItems(enrichedItems);
+      } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom') {
+        // --- OpenAI / DeepSeek / Custom Implementation ---
+        const baseUrl = aiConfig.baseUrl || 'https://api.openai.com/v1';
+        const model = aiConfig.model || 'gpt-4o';
+        
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: model,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: promptText },
+                  { type: "image_url", image_url: { url: base64Image } }
+                ]
+              }
+            ],
+            response_format: { type: "json_object" } // Force JSON mode if supported
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error?.message || `API Error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const content = data.choices[0]?.message?.content || '[]';
+        
+        // OpenAI json_object mode might return { "items": [...] } or just the array depending on prompt
+        // We'll try to parse and extract
+        jsonString = content;
+
+      } else if (provider === 'anthropic') {
+        // --- Anthropic Implementation ---
+        const baseUrl = aiConfig.baseUrl || 'https://api.anthropic.com/v1';
+        const model = aiConfig.model || 'claude-3-5-sonnet-20240620';
+        const base64Data = base64Image.split(',')[1];
+        const mimeType = base64Image.split(';')[0].split(':')[1];
+
+        const response = await fetch(`${baseUrl}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true' // Required for client-side calls
+          },
+          body: JSON.stringify({
+            model: model,
+            max_tokens: 1024,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { 
+                    type: "image", 
+                    source: { 
+                      type: "base64", 
+                      media_type: mimeType, 
+                      data: base64Data 
+                    } 
+                  },
+                  { type: "text", text: promptText + "\nReturn ONLY the JSON array." }
+                ]
+              }
+            ]
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error?.message || `API Error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        jsonString = data.content[0]?.text || '[]';
       }
-    } catch (err) {
+
+      // --- Common Parsing Logic ---
+      // Clean up markdown code blocks if present (e.g. ```json ... ```)
+      jsonString = jsonString.replace(/```json\n?|\n?```/g, '').trim();
+      
+      // Sometimes models wrap array in an object like { "items": [...] }
+      let parsed = JSON.parse(jsonString);
+      if (!Array.isArray(parsed) && parsed.items && Array.isArray(parsed.items)) {
+        parsed = parsed.items;
+      } else if (!Array.isArray(parsed)) {
+        // Try to find array in object values
+        const possibleArray = Object.values(parsed).find(v => Array.isArray(v));
+        if (possibleArray) parsed = possibleArray;
+        else parsed = []; // Fallback
+      }
+
+      // Add default location and dates to each item
+      const defaultLocation = locations[0]?.id || '';
+      const enrichedItems = parsed.map((item: any) => ({
+        ...item,
+        location_id: defaultLocation,
+        last_action_date: new Date().toISOString().split('T')[0],
+        expiration_date: ''
+      }));
+      setExtractedItems(enrichedItems);
+
+    } catch (err: any) {
       console.error('Error analyzing image:', err);
-      setError(lang === 'zh' ? '分析图片失败。请重试或手动添加物品。' : 'Failed to analyze image. Please try again or add items manually.');
+      setError(lang === 'zh' ? `分析失败: ${err.message}` : `Analysis failed: ${err.message}`);
     } finally {
       setIsAnalyzing(false);
     }
