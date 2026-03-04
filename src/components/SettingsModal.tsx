@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { X, Globe, DollarSign, Download, Upload, Database } from 'lucide-react';
+import { X, Globe, DollarSign, Download, Upload, Database, Bot } from 'lucide-react';
 import { Language, Currency } from '../i18n';
 import { useTranslation } from 'react-i18next';
 import { storageService } from '../services/storage';
+import { AIConfigSettings } from './AIConfigSettings';
+import { AIConfig } from '../types';
 
 interface SettingsModalProps {
   currentLanguage: Language;
@@ -17,11 +19,30 @@ export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSav
   const { t } = useTranslation();
   const [lang, setLang] = useState<Language>(currentLanguage);
   const [curr, setCurr] = useState<Currency>(currentCurrency);
+  const [aiConfig, setAiConfig] = useState<AIConfig>({
+    provider: 'openai',
+    model: 'gpt-4o',
+    apiKey: '',
+    baseUrl: 'https://api.openai.com/v1'
+  });
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
 
+  useEffect(() => {
+    const loadedConfig = storageService.getAIConfig();
+    if (loadedConfig) {
+      setAiConfig(loadedConfig);
+    }
+  }, []);
+
   const handleSave = async () => {
+    setSaving(true);
+    storageService.saveAIConfig(aiConfig);
     onSave(lang, curr);
+    setTimeout(() => {
+      setSaving(false);
+      onClose();
+    }, 500);
   };
 
   const handleExport = () => {
@@ -59,19 +80,21 @@ export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSav
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden"
+        className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col max-h-[85vh]"
       >
-        <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center">
+        <div className="px-6 py-4 border-b border-zinc-100 flex justify-between items-center shrink-0">
           <h2 className="font-semibold text-lg">{t('settings')}</h2>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600">
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-6 flex-1 overflow-y-auto overscroll-contain pb-10 scrollbar-hide">
           <div>
-            <label className="flex items-center gap-2 text-sm font-medium text-zinc-700 mb-3">
-              <Globe className="w-4 h-4" /> {t('language')}
-            </label>
+            <div className="sticky top-0 bg-white z-10 pb-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">
+                <Globe className="w-4 h-4" /> {t('language')}
+              </label>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => setLang('en')}
@@ -97,9 +120,11 @@ export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSav
           </div>
           
           <div>
-            <label className="flex items-center gap-2 text-sm font-medium text-zinc-700 mb-3">
-              <DollarSign className="w-4 h-4" /> {t('currency')}
-            </label>
+            <div className="sticky top-0 bg-white z-10 pb-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">
+                <DollarSign className="w-4 h-4" /> {t('currency')}
+              </label>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => setCurr('USD')}
@@ -123,10 +148,17 @@ export function SettingsModal({ currentLanguage, currentCurrency, onClose, onSav
               </button>
             </div>
           </div>
+
+          <div className="border-t border-zinc-100 pt-6">
+            <AIConfigSettings config={aiConfig} onChange={setAiConfig} />
+          </div>
+
           <div>
-            <label className="flex items-center gap-2 text-sm font-medium text-zinc-700 mb-3">
-              <Database className="w-4 h-4" /> {t('dataManagement')}
-            </label>
+            <div className="sticky top-0 bg-white z-10 pb-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">
+                <Database className="w-4 h-4" /> {t('dataManagement')}
+              </label>
+            </div>
             <div className="space-y-3">
               <button
                 onClick={handleExport}

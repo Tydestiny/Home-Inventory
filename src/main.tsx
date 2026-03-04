@@ -15,6 +15,23 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// Suppress ResizeObserver loop error
+const resizeObserverLoopErr = /ResizeObserver loop completed with undelivered notifications|ResizeObserver loop limit exceeded/;
+const originalError = window.console.error;
+window.console.error = (...args) => {
+  if (args[0] && typeof args[0] === 'string' && resizeObserverLoopErr.test(args[0])) {
+    return;
+  }
+  originalError(...args);
+};
+
+window.addEventListener('error', (e) => {
+  const msg = e.message || '';
+  if (resizeObserverLoopErr.test(msg)) {
+    e.stopImmediatePropagation();
+  }
+});
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

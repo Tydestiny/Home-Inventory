@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Camera, Upload, X, Check, Loader2, AlertCircle, Clipboard } from 'lucide-react';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -26,6 +26,34 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Global paste listener
+  useEffect(() => {
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const blob = item.getAsFile();
+          if (blob) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              const base64 = event.target?.result as string;
+              setImage(base64);
+              analyzeImage(base64);
+            };
+            reader.readAsDataURL(blob);
+            e.preventDefault(); // Prevent default paste behavior
+            return;
+          }
+        }
+      }
+    };
+
+    window.addEventListener('paste', handleGlobalPaste);
+    return () => window.removeEventListener('paste', handleGlobalPaste);
+  }, []);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -39,6 +67,11 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
   };
 
   const handlePaste = async () => {
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      setError(lang === 'zh' ? '您的浏览器不支持直接读取剪贴板，请尝试按 Ctrl+V 粘贴。' : 'Clipboard access not supported. Please press Ctrl+V to paste.');
+      return;
+    }
+
     try {
       const clipboardItems = await navigator.clipboard.read();
       for (const item of clipboardItems) {
@@ -55,9 +88,15 @@ export function SmartScanModal({ categories, locations, presets, lang, onClose, 
         }
       }
       setError(lang === 'zh' ? '剪贴板中未找到图片。' : 'No image found in clipboard.');
-    } catch (err) {
-      console.error('Error reading clipboard:', err);
-      setError(lang === 'zh' ? '无法读取剪贴板。请检查权限。' : 'Failed to read clipboard. Please check permissions.');
+    } catch (err: any) {
+      // Handle permission errors gracefully without spamming console.error
+      if (err.name === 'NotAllowedError' || err.message?.includes('permissions policy')) {
+        console.warn('Clipboard access blocked:', err.message);
+        setError(lang === 'zh' ? '无法访问剪贴板（权限受限），请直接按 Ctrl+V 粘贴图片。' : 'Clipboard access blocked. Please press Ctrl+V to paste your image.');
+      } else {
+        console.error('Error reading clipboard:', err);
+        setError(lang === 'zh' ? '无法读取剪贴板。' : 'Failed to read clipboard.');
+      }
     }
   };
 

@@ -141,5 +141,15 @@
   "importConfirm": "Are you sure you want to import data? This will overwrite your current inventory.",
   "importSuccess": "Data imported successfully!",
   "importError": "Failed to import data. Please check the file format.",
-  "dataManagement": "Data Management"
+  "dataManagement": "Data Management",
+  "aiConfig": "AI Configuration",
+  "selectProvider": "Select Provider",
+  "modelName": "Model Name",
+  "apiKey": "API Key",
+  "baseUrl": "Base URL",
+  "testConnection": "Test Connection",
+  "connectionSuccess": "Connection Successful!",
+  "connectionFailed": "Connection Failed",
+  "provider": "Provider",
+  "custom": "Custom (OpenAI Compatible)"
 }

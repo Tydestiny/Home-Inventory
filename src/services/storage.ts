@@ -2,6 +2,7 @@ import { Item, Batch, Category, Location, SmartPreset, Notification, LifecycleTy
 
 const STORAGE_KEY = 'home_inventory_data';
 const SETTINGS_KEY = 'home_inventory_settings';
+const AI_CONFIG_KEY = 'home_inventory_ai_config';
 
 interface StorageData {
   items: Item[];
@@ -137,6 +138,23 @@ export const storageService = {
 
   saveSettings(settings: { language: string, currency: string }) {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  },
+
+  getAIConfig() {
+    const stored = localStorage.getItem(AI_CONFIG_KEY);
+    if (!stored) {
+      return {
+        provider: 'openai',
+        model: 'gpt-4o',
+        apiKey: '',
+        baseUrl: 'https://api.openai.com/v1'
+      };
+    }
+    return JSON.parse(stored);
+  },
+
+  saveAIConfig(config: any) {
+    localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(config));
   },
 
   getItems(): Item[] {
@@ -509,6 +527,7 @@ export const storageService = {
     const data = {
       inventory: this.getData(),
       settings: this.getSettings(),
+      aiConfig: this.getAIConfig(),
       exportDate: new Date().toISOString()
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -528,6 +547,9 @@ export const storageService = {
       if (parsed.inventory && parsed.settings) {
         this.saveData(parsed.inventory);
         this.saveSettings(parsed.settings);
+        if (parsed.aiConfig) {
+          this.saveAIConfig(parsed.aiConfig);
+        }
         return true;
       }
       return false;

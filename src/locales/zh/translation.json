@@ -141,5 +141,15 @@
   "importConfirm": "您确定要导入数据吗？这将覆盖您当前的库存。",
   "importSuccess": "数据导入成功！",
   "importError": "导入失败，请检查文件格式。",
-  "dataManagement": "数据管理"
+  "dataManagement": "数据管理",
+  "aiConfig": "AI 模型配置",
+  "selectProvider": "选择厂商",
+  "modelName": "模型名称",
+  "apiKey": "API 密钥",
+  "baseUrl": "接口地址",
+  "testConnection": "测试连接",
+  "connectionSuccess": "连接成功！",
+  "connectionFailed": "连接失败",
+  "provider": "厂商",
+  "custom": "自定义 (OpenAI 兼容)"
 }

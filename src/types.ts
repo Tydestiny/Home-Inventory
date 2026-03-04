@@ -27,7 +27,6 @@ export interface Item {
   lifecycle_interval_days?: number;
   last_action_date?: string;
   next_action_date?: string;
-  first_use_date?: string;
   last_replaced_date?: string; // Moved here
   
   restock_frequency_days?: number;
@@ -75,4 +74,13 @@ export interface SmartPreset {
   category_id: string;
   lifecycle_type: LifecycleType;
   lifecycle_interval_days: number;
+}
+
+export type AIProvider = 'openai' | 'anthropic' | 'google' | 'deepseek' | 'custom';
+
+export interface AIConfig {
+  provider: AIProvider;
+  model: string;
+  apiKey: string;
+  baseUrl?: string;
 }
